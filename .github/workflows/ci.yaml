@@ -1,0 +1,57 @@
+name: "Testing"
+
+on: 
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        go: ["1.18", "1.19", "1.20"]
+        include:
+          - go: "1.18"
+            analysis: true
+          - go: "1.19"
+            analysis: true
+          - go: "1.20"
+            analysis: true
+    name: GO ${{ matrix.go }}
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v3
+        with:
+          go-version: "${{ matrix.go }}"
+      - name: Set up gotestfmt
+        uses: GoTestTools/gotestfmt-action@v2
+
+      # Alternatively, install using go install
+      - name: Set up gotestfmt
+        run: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+
+      - name: "Setup dependencies"
+        run: |
+          go mod download
+
+      # Run tests with nice formatting. Save the original log in /tmp/gotest.log
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          go test -json -v ./... 2>&1 | tee /tmp/gotest.log | gotestfmt
+
+      # Upload the original go test log as an artifact for later review.
+      - name: Upload test log
+        uses: actions/upload-artifact@v2
+        if: always()
+        with:
+          name: test-log
+          path: /tmp/gotest.log
+          if-no-files-found: error
