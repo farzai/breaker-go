@@ -128,6 +128,7 @@ func (c *CircuitBreakerImpl) Reset() {
 
 	c.failureCount = 0
 	c.state = Closed
+	c.lastFailure = time.Time{}
 }
 
 // reset is a background goroutine which sleeps for the resetTimeout
