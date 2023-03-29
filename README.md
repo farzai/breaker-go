@@ -3,7 +3,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/farzai/breaker-go.svg)](https://pkg.go.dev/github.com/farzai/breaker-go)
 [![Go Report Card](https://goreportcard.com/badge/github.com/farzai/breaker-go)](https://goreportcard.com/report/github.com/farzai/breaker-go)
 ![Github Actions](https://github.com/farzai/breaker-go/actions/workflows/ci.yaml/badge.svg?branch=main)
-
+[![codecov](https://codecov.io/gh/farzai/breaker-go/branch/main/graph/badge.svg)](https://codecov.io/gh/farzai/breaker-go)
 
 This repository contains a simple implementation of the Circuit Breaker design pattern in Golang. The implementation follows clean architecture principles and is designed to be easy to unit test.
 

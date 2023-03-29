@@ -30,28 +30,19 @@ jobs:
       - uses: actions/setup-go@v3
         with:
           go-version: "${{ matrix.go }}"
-      - name: Set up gotestfmt
-        uses: GoTestTools/gotestfmt-action@v2
-
-      # Alternatively, install using go install
-      - name: Set up gotestfmt
-        run: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
 
       - name: "Setup dependencies"
         run: |
           go mod download
 
-      # Run tests with nice formatting. Save the original log in /tmp/gotest.log
-      - name: Run tests
+      - name: Generate coverage report
         run: |
-          set -euo pipefail
-          go test -json -v ./... 2>&1 | tee /tmp/gotest.log | gotestfmt
+          go test `go list ./...` -coverprofile=coverage.txt -covermode=atomic
 
-      # Upload the original go test log as an artifact for later review.
-      - name: Upload test log
-        uses: actions/upload-artifact@v2
-        if: always()
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v3
         with:
-          name: test-log
-          path: /tmp/gotest.log
-          if-no-files-found: error
+          token: ${{ secrets.CODECOV_TOKEN }}
+          file: ./coverage.txt
+          flags: unittests
+          name: codecov-umbrella
