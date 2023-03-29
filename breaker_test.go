@@ -75,6 +75,10 @@ func TestCircuitBreakerOpenToHalfOpen(t *testing.T) {
 		_, _ = cb.Execute(failureAction)
 	}
 
+	if cb.State() != breaker.Open {
+		t.Errorf("Expected state to be Open, got %v", cb.State())
+	}
+
 	time.Sleep(2 * time.Second) // wait for the reset timeout to expire
 
 	if cb.State() != breaker.HalfOpen {
@@ -101,5 +105,56 @@ func TestCircuitBreakerHalfOpenToClosed(t *testing.T) {
 
 	if cb.State() != breaker.Closed {
 		t.Errorf("Expected state to be Closed, got %v", cb.State())
+	}
+}
+
+func TestCircuitBreakerHalfOpenToOpen(t *testing.T) {
+	cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+	failureAction := func() (interface{}, error) {
+		return nil, errors.New("Error")
+	}
+
+	for i := 0; i < 3; i++ {
+		_, _ = cb.Execute(failureAction)
+	}
+
+	if cb.State() != breaker.Open {
+		t.Errorf("Expected state to be Open, got %v", cb.State())
+	}
+
+	time.Sleep(2 * time.Second) // wait for the reset timeout to expire
+
+	_, _ = cb.Execute(failureAction)
+
+	if cb.State() != breaker.Open {
+		t.Errorf("Expected state to be Open, got %v", cb.State())
+	}
+}
+
+func TestCircuitBreakerHalfOpenToOpenOnFailure(t *testing.T) {
+	cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+	failureAction := func() (interface{}, error) {
+		return nil, errors.New("Error")
+	}
+	successAction := func() (interface{}, error) {
+		return "Success", nil
+	}
+
+	for i := 0; i < 3; i++ {
+		_, _ = cb.Execute(failureAction)
+	}
+
+	time.Sleep(2 * time.Second) // wait for the reset timeout to expire
+
+	_, _ = cb.Execute(successAction)
+
+	if cb.State() != breaker.Closed {
+		t.Errorf("Expected state to be Closed, got %v", cb.State())
+	}
+
+	_, _ = cb.Execute(failureAction)
+
+	if cb.State() != breaker.Open {
+		t.Errorf("Expected state to be Open, got %v", cb.State())
 	}
 }
