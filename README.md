@@ -5,6 +5,8 @@
 ![Github Actions](https://github.com/farzai/breaker-go/actions/workflows/ci.yaml/badge.svg?branch=main)
 [![codecov](https://codecov.io/gh/farzai/breaker-go/branch/main/graph/badge.svg)](https://codecov.io/gh/farzai/breaker-go)
 
+This repository contains a simple implementation of the Circuit Breaker in Golang.
+
 ## Overview
 
 The Circuit Breaker pattern is used to protect a system from failures in its external dependencies. It helps to improve the system's resiliency by preventing cascading failures and allowing the system to recover gracefully when a dependency fails.
