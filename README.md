@@ -5,7 +5,7 @@
 ![Github Actions](https://github.com/farzai/breaker-go/actions/workflows/ci.yaml/badge.svg?branch=main)
 [![codecov](https://codecov.io/gh/farzai/breaker-go/branch/main/graph/badge.svg)](https://codecov.io/gh/farzai/breaker-go)
 
-This repository contains a simple implementation of the Circuit Breaker design pattern in Golang. The implementation follows clean architecture principles and is designed to be easy to unit test.
+This repository contains a simple implementation of the Circuit Breaker in Golang.
 
 ## Overview
 
