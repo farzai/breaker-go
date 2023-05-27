@@ -77,28 +77,24 @@ func (c *CircuitBreakerImpl) Execute(action func() (interface{}, error)) (interf
 		return nil, ErrCircuitBreakerOpen
 	}
 
-	if currentState == Closed || currentState == HalfOpen {
-		// If the CircuitBreaker is closed or half-open, execute the action.
-		result, err := action()
-		if err != nil {
-			// If the action returns an error, increment the failure count.
-			c.failureCount++
+	// If the CircuitBreaker is closed or half-open, execute the action.
+	result, err := action()
+	if err != nil {
+		// If the action returns an error, increment the failure count.
+		c.failureCount++
 
-			// If the failure count has reached the threshold, set the state to open.
-			if c.failureCount >= c.failureThreshold {
-				c.setState(Open)
-				c.lastFailure = time.Now()
-			}
-		} else {
-			// If the action returns no error, reset the failure count and set the state to closed.
-			c.failureCount = 0
-			c.setState(Closed)
+		// If the failure count has reached the threshold, set the state to open.
+		if c.failureCount >= c.failureThreshold {
+			c.setState(Open)
+			c.lastFailure = time.Now()
 		}
-
-		return result, err
+	} else {
+		// If the action returns no error, reset the failure count and set the state to closed.
+		c.failureCount = 0
+		c.setState(Closed)
 	}
 
-	return nil, nil
+	return result, err
 }
 
 func (c *CircuitBreakerImpl) State() CircuitBreakerState {
