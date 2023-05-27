@@ -121,16 +121,5 @@ func (c *CircuitBreakerImpl) Reset() {
 	c.failureCount = 0
 	c.state = Closed
 	c.lastFailure = time.Time{}
-	c.storage.Save(c.state)
-}
-
-func (c *CircuitBreakerImpl) reset() {
-	time.Sleep(c.resetTimeout)
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	if c.state == Open {
-		c.state = HalfOpen
-		c.storage.Save(c.state)
-	}
+	c.storage.Reset()
 }

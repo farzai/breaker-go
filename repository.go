@@ -5,6 +5,7 @@ import "sync"
 type StateRepository interface {
 	Save(state CircuitBreakerState)
 	Load() CircuitBreakerState
+	Reset() error
 }
 
 type InMemoryStateStorage struct {
@@ -38,4 +39,13 @@ func (r *InMemoryStateRepository) Load() CircuitBreakerState {
 	defer r.storage.mutex.Unlock()
 
 	return r.storage.state
+}
+
+func (r *InMemoryStateRepository) Reset() error {
+	r.storage.mutex.Lock()
+	defer r.storage.mutex.Unlock()
+
+	r.storage.state = Closed
+
+	return nil
 }
