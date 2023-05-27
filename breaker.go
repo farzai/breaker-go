@@ -71,27 +71,15 @@ func NewCircuitBreakerWithStorage(failureThreshold int, resetTimeout time.Durati
 }
 
 func (c *CircuitBreakerImpl) Execute(action func() (interface{}, error)) (interface{}, error) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	currentState := c.State()
 
-	// Load the current state from the storage.
-	c.loadState()
-
-	if c.state == Open {
-		// If the CircuitBreaker is open, check if the reset timeout has passed.
-		if time.Since(c.lastFailure) >= c.resetTimeout {
-			// If the reset timeout has passed, set the state to half-open.
-			c.setState(HalfOpen)
-		} else {
-			// If the reset timeout has not passed, return an error.
-			return nil, ErrCircuitBreakerOpen
-		}
+	if currentState == Open {
+		return nil, ErrCircuitBreakerOpen
 	}
 
-	if c.state == Closed || c.state == HalfOpen {
+	if currentState == Closed || currentState == HalfOpen {
 		// If the CircuitBreaker is closed or half-open, execute the action.
 		result, err := action()
-
 		if err != nil {
 			// If the action returns an error, increment the failure count.
 			c.failureCount++
@@ -114,8 +102,10 @@ func (c *CircuitBreakerImpl) Execute(action func() (interface{}, error)) (interf
 }
 
 func (c *CircuitBreakerImpl) State() CircuitBreakerState {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	// If the state is not closed, load the current state from the storage.
+	if c.state != Closed {
+		c.state = c.storage.Load()
+	}
 
 	if c.state == Open {
 		// If the CircuitBreaker is open, check if the reset timeout has passed.
@@ -126,7 +116,7 @@ func (c *CircuitBreakerImpl) State() CircuitBreakerState {
 	}
 
 	// Load the current state from the storage.
-	return c.loadState()
+	return c.state
 }
 
 func (c *CircuitBreakerImpl) Reset() {
@@ -139,18 +129,12 @@ func (c *CircuitBreakerImpl) Reset() {
 	// Reset the last failure time
 	c.lastFailure = time.Time{}
 
-	// Reset the internal storage for the CircuitBreaker
-	c.storage.Reset()
+	// Reset the state to closed
+	c.setState(Closed)
 }
 
 // setState is a helper function to set the state of the CircuitBreaker
 func (c *CircuitBreakerImpl) setState(state CircuitBreakerState) {
 	c.state = state
 	c.storage.Save(c.state)
-}
-
-func (c *CircuitBreakerImpl) loadState() CircuitBreakerState {
-	c.state = c.storage.Load()
-
-	return c.state
 }
