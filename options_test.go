@@ -5,6 +5,7 @@ import (
 	"time"
 
 	breaker "github.com/farzai/breaker-go"
+	"github.com/farzai/breaker-go/logging"
 )
 
 func TestWithPersistenceConfig(t *testing.T) {
@@ -454,5 +455,116 @@ func TestWithAsyncPersistence(t *testing.T) {
 		if cb == nil {
 			t.Error("Expected circuit breaker to be created")
 		}
+	})
+}
+
+func TestWithLogger(t *testing.T) {
+	t.Run("Sets custom logger", func(t *testing.T) {
+		logger := logging.NewTestLogger()
+
+		cb, err := breaker.New(
+			breaker.WithFailureThreshold(3),
+			breaker.WithResetTimeout(1*time.Second),
+			breaker.WithLogger(logger),
+		)
+
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
+		if cb == nil {
+			t.Error("Expected circuit breaker to be created")
+		}
+
+		// Trigger some actions to generate logs
+		cb.Execute(func() (interface{}, error) {
+			return "test", nil
+		})
+
+		// Logger should have captured some logs
+		if logger.Count() == 0 {
+			t.Error("Expected logger to capture logs")
+		}
+	})
+}
+
+func TestWithLogLevel(t *testing.T) {
+	t.Run("Sets log level to Debug", func(t *testing.T) {
+		logger := logging.NewTestLogger()
+
+		cb, err := breaker.New(
+			breaker.WithFailureThreshold(3),
+			breaker.WithResetTimeout(1*time.Second),
+			breaker.WithLogger(logger),
+			breaker.WithLogLevel(logging.LevelDebug),
+		)
+
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
+		if cb == nil {
+			t.Error("Expected circuit breaker to be created")
+		}
+	})
+
+	t.Run("Sets log level to Error", func(t *testing.T) {
+		logger := logging.NewTestLogger()
+
+		cb, err := breaker.New(
+			breaker.WithFailureThreshold(3),
+			breaker.WithResetTimeout(1*time.Second),
+			breaker.WithLogger(logger),
+			breaker.WithLogLevel(logging.LevelError),
+		)
+
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
+		if cb == nil {
+			t.Error("Expected circuit breaker to be created")
+		}
+	})
+}
+
+func TestWithPersistenceLogger(t *testing.T) {
+	t.Run("Sets persistence logger", func(t *testing.T) {
+		logger := logging.NewTestLogger()
+
+		cb, err := breaker.New(
+			breaker.WithFailureThreshold(3),
+			breaker.WithResetTimeout(1*time.Second),
+			breaker.WithPersistenceLogger(logger),
+		)
+
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
+		if cb == nil {
+			t.Error("Expected circuit breaker to be created")
+		}
+	})
+}
+
+func TestWithRestoreErrorHandler(t *testing.T) {
+	t.Run("Sets restore error handler", func(t *testing.T) {
+		var capturedError error
+		restoreHandler := func(err error) {
+			capturedError = err
+		}
+
+		cb, err := breaker.New(
+			breaker.WithFailureThreshold(3),
+			breaker.WithResetTimeout(1*time.Second),
+			breaker.WithRestoreErrorHandler(restoreHandler),
+		)
+
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
+		if cb == nil {
+			t.Error("Expected circuit breaker to be created")
+		}
+
+		// Handler is set (can't easily test it being called without complex setup)
+		_ = capturedError
 	})
 }

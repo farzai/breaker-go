@@ -11,6 +11,23 @@ import (
 	"time"
 )
 
+// Helper types for testing
+type testStringer struct {
+	val string
+}
+
+func (ts *testStringer) String() string {
+	return ts.val
+}
+
+type customStringer struct {
+	val string
+}
+
+func (cs *customStringer) String() string {
+	return cs.val
+}
+
 // TestLevel tests log level string representation
 func TestLevel(t *testing.T) {
 	tests := []struct {
@@ -174,6 +191,57 @@ func TestDefaultLogger(t *testing.T) {
 			t.Error("Duration field not logged")
 		}
 	})
+
+	t.Run("WithContext creates logger with context", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := NewDefaultLoggerWithOutput(LevelInfo, &buf, &buf)
+
+		ctx := context.WithValue(context.Background(), "request_id", "12345")
+		ctxLogger := logger.WithContext(ctx)
+
+		ctxLogger.Info("test message")
+
+		// Should not panic and should log
+		output := buf.String()
+		if !strings.Contains(output, "test message") {
+			t.Error("Message should be logged with context")
+		}
+	})
+
+	t.Run("formatField handles various field types", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := NewDefaultLoggerWithOutput(LevelInfo, &buf, &buf)
+
+		// Test with Int64, Float64, Stringer, Any, Bytes
+		ts := &testStringer{val: "test"}
+
+		logger.Info("field test",
+			Int64("int64", int64(999)),
+			Float64("float", 2.71828),
+			Stringer("stringer", ts),
+			Any("any", map[string]int{"count": 42}),
+			Bytes("bytes", []byte("data")),
+		)
+
+		output := buf.String()
+
+		// Verify all fields are formatted somehow
+		if !strings.Contains(output, "int64=") {
+			t.Error("Int64 field not formatted")
+		}
+		if !strings.Contains(output, "float=") {
+			t.Error("Float64 field not formatted")
+		}
+		if !strings.Contains(output, "stringer=") {
+			t.Error("Stringer field not formatted")
+		}
+		if !strings.Contains(output, "any=") {
+			t.Error("Any field not formatted")
+		}
+		if !strings.Contains(output, "bytes=") {
+			t.Error("Bytes field not formatted")
+		}
+	})
 }
 
 // TestNoOpLogger tests the no-op logger
@@ -295,6 +363,50 @@ func TestTestLogger(t *testing.T) {
 			t.Errorf("Expected 1 error log, got %d", logger.CountByLevel(LevelError))
 		}
 	})
+
+	t.Run("With creates child logger", func(t *testing.T) {
+		logger := NewTestLogger()
+
+		child := logger.With(String("parent", "value"))
+		child.Info("test", String("child", "value"))
+
+		// TestLogger's With returns self (simplified implementation)
+		entries := logger.Entries()
+		if len(entries) != 1 {
+			t.Errorf("Expected 1 entry, got %d", len(entries))
+		}
+
+		// Should have at least the child field
+		entry := entries[0]
+		if len(entry.Fields) < 1 {
+			t.Error("Expected at least 1 field")
+		}
+	})
+
+	t.Run("WithContext creates logger with context", func(t *testing.T) {
+		logger := NewTestLogger()
+
+		ctx := context.WithValue(context.Background(), "request_id", "12345")
+		ctxLogger := logger.WithContext(ctx)
+
+		ctxLogger.Info("test")
+
+		// Should not panic and should log
+		if logger.Count() != 1 {
+			t.Error("Expected 1 log entry")
+		}
+	})
+
+	t.Run("Enabled always returns true", func(t *testing.T) {
+		logger := NewTestLogger()
+
+		if !logger.Enabled(LevelDebug) {
+			t.Error("TestLogger should be enabled for Debug")
+		}
+		if !logger.Enabled(LevelError) {
+			t.Error("TestLogger should be enabled for Error")
+		}
+	})
 }
 
 // TestFields tests field helper functions
@@ -366,6 +478,109 @@ func TestFields(t *testing.T) {
 			t.Errorf("Expected http.path, got %s", fields[1].Key)
 		}
 	})
+
+	t.Run("Int64 creates int64 field", func(t *testing.T) {
+		f := Int64("key", int64(9223372036854775807))
+		if f.Key != "key" || f.Type != Int64Type || f.Value != int64(9223372036854775807) {
+			t.Error("Int64 field not created correctly")
+		}
+	})
+
+	t.Run("Float64 creates float64 field", func(t *testing.T) {
+		f := Float64("key", 3.14159)
+		if f.Key != "key" || f.Type != Float64Type || f.Value != 3.14159 {
+			t.Error("Float64 field not created correctly")
+		}
+	})
+
+	t.Run("NamedError creates named error field", func(t *testing.T) {
+		err := errors.New("test error")
+		f := NamedError("custom_error", err)
+		if f.Key != "custom_error" || f.Type != ErrorType {
+			t.Error("NamedError field not created correctly")
+		}
+	})
+
+	t.Run("Any creates any type field", func(t *testing.T) {
+		type customType struct {
+			Name string
+			Age  int
+		}
+		val := customType{Name: "test", Age: 30}
+		f := Any("key", val)
+		if f.Key != "key" || f.Type != AnyType {
+			t.Error("Any field not created correctly")
+		}
+	})
+
+	t.Run("Stringer creates stringer field", func(t *testing.T) {
+		cs := &customStringer{val: "custom"}
+		f := Stringer("key", cs)
+		if f.Key != "key" || f.Type != StringType {
+			t.Error("Stringer field not created correctly")
+		}
+		if f.Value != "custom" {
+			t.Error("Stringer value not converted correctly")
+		}
+	})
+
+	t.Run("Bytes creates bytes field", func(t *testing.T) {
+		data := []byte("hello world")
+		f := Bytes("key", data)
+		if f.Key != "key" || f.Type != StringType {
+			t.Error("Bytes field not created correctly")
+		}
+		if f.Value != "hello world" {
+			t.Error("Bytes value not converted correctly")
+		}
+	})
+
+	t.Run("BytesLength creates bytes length field", func(t *testing.T) {
+		data := []byte("hello")
+		f := BytesLength("key", data)
+		if f.Key != "key_length" || f.Type != IntType || f.Value != 5 {
+			t.Error("BytesLength field not created correctly")
+		}
+	})
+
+	t.Run("Stack creates stack field", func(t *testing.T) {
+		f := Stack("trace")
+		if f.Key != "trace" || f.Type != AnyType {
+			t.Error("Stack field not created correctly")
+		}
+		// Stack field has a placeholder value
+		if f.Value == nil {
+			t.Error("Stack should have a value")
+		}
+	})
+
+	t.Run("Strings creates multiple string fields", func(t *testing.T) {
+		values := map[string]string{"a": "1", "b": "2"}
+		fields := Strings("prefix", values)
+		if len(fields) != 2 {
+			t.Errorf("Expected 2 fields, got %d", len(fields))
+		}
+		// Each field should have prefix. prefix
+		for _, f := range fields {
+			if !strings.HasPrefix(f.Key, "prefix.") {
+				t.Errorf("Field key should start with 'prefix.', got %s", f.Key)
+			}
+		}
+	})
+
+	t.Run("Ints creates multiple int fields", func(t *testing.T) {
+		values := map[string]int{"x": 1, "y": 2}
+		fields := Ints("metric", values)
+		if len(fields) != 2 {
+			t.Errorf("Expected 2 fields, got %d", len(fields))
+		}
+		// Each field should have metric. prefix
+		for _, f := range fields {
+			if !strings.HasPrefix(f.Key, "metric.") {
+				t.Errorf("Field key should start with 'metric.', got %s", f.Key)
+			}
+		}
+	})
 }
 
 // TestBuilder tests the logger builder
@@ -427,6 +642,49 @@ func TestBuilder(t *testing.T) {
 
 		if logger.GetLevel() != LevelInfo {
 			t.Error("Production preset should use Info level")
+		}
+	})
+
+	t.Run("WithErrorOutput sets error output", func(t *testing.T) {
+		var errBuf bytes.Buffer
+
+		logger := NewBuilder().
+			WithLevel(LevelInfo).
+			WithErrorOutput(&errBuf).
+			Build()
+
+		logger.Error("error message")
+
+		output := errBuf.String()
+		if !strings.Contains(output, "error message") {
+			t.Error("Error should be logged to error output")
+		}
+	})
+
+	t.Run("WithContext sets context", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), "request_id", "12345")
+
+		logger := NewBuilder().
+			WithContext(ctx).
+			Build()
+
+		// Should not panic
+		logger.Info("test")
+	})
+
+	t.Run("Testing preset", func(t *testing.T) {
+		logger := Testing().BuildDefault()
+
+		if logger.GetLevel() != LevelDebug {
+			t.Error("Testing preset should use Debug level")
+		}
+	})
+
+	t.Run("Silent preset", func(t *testing.T) {
+		logger := Silent().BuildNoOp()
+
+		if logger.Enabled(LevelError) {
+			t.Error("Silent preset should create disabled logger")
 		}
 	})
 }
@@ -493,6 +751,132 @@ func TestSlogAdapter(t *testing.T) {
 
 		// Should not panic
 	})
+
+	t.Run("logs Debug messages", func(t *testing.T) {
+		var buf bytes.Buffer
+		handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})
+		slogger := slog.New(handler)
+
+		logger := NewSlogAdapter(slogger)
+		logger.Debug("debug test", String("key", "value"))
+
+		output := buf.String()
+
+		if !strings.Contains(output, "debug test") {
+			t.Error("Debug message not logged")
+		}
+		if !strings.Contains(output, "key=value") {
+			t.Error("Debug field not logged")
+		}
+	})
+
+	t.Run("logs Warn messages", func(t *testing.T) {
+		var buf bytes.Buffer
+		handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{})
+		slogger := slog.New(handler)
+
+		logger := NewSlogAdapter(slogger)
+		logger.Warn("warning test", String("warning", "yes"))
+
+		output := buf.String()
+
+		if !strings.Contains(output, "warning test") {
+			t.Error("Warn message not logged")
+		}
+		if !strings.Contains(output, "warning=yes") {
+			t.Error("Warn field not logged")
+		}
+	})
+
+	t.Run("logs Error messages", func(t *testing.T) {
+		var buf bytes.Buffer
+		handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{})
+		slogger := slog.New(handler)
+
+		logger := NewSlogAdapter(slogger)
+		logger.Error("error test", String("error_code", "500"))
+
+		output := buf.String()
+
+		if !strings.Contains(output, "error test") {
+			t.Error("Error message not logged")
+		}
+		if !strings.Contains(output, "error_code=500") {
+			t.Error("Error field not logged")
+		}
+	})
+
+	t.Run("Enabled checks level correctly", func(t *testing.T) {
+		var buf bytes.Buffer
+		handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{
+			Level: slog.LevelWarn,
+		})
+		slogger := slog.New(handler)
+
+		logger := NewSlogAdapter(slogger)
+
+		if logger.Enabled(LevelDebug) {
+			t.Error("Debug should be disabled at Warn level")
+		}
+		if logger.Enabled(LevelInfo) {
+			t.Error("Info should be disabled at Warn level")
+		}
+		if !logger.Enabled(LevelWarn) {
+			t.Error("Warn should be enabled at Warn level")
+		}
+		if !logger.Enabled(LevelError) {
+			t.Error("Error should be enabled at Warn level")
+		}
+	})
+
+	t.Run("converts all field types to slog attrs", func(t *testing.T) {
+		var buf bytes.Buffer
+		handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{})
+		slogger := slog.New(handler)
+
+		logger := NewSlogAdapter(slogger)
+
+		now := time.Now()
+		duration := 100 * time.Millisecond
+		testErr := errors.New("test error")
+
+		logger.Info("field test",
+			String("str", "value"),
+			Int("int", 42),
+			Int64("int64", int64(123)),
+			Float64("float", 3.14),
+			Bool("bool", true),
+			Time("time", now),
+			Duration("duration", duration),
+			Error(testErr),
+		)
+
+		output := buf.String()
+
+		if !strings.Contains(output, "str=value") {
+			t.Error("String field not converted")
+		}
+		if !strings.Contains(output, "int=42") {
+			t.Error("Int field not converted")
+		}
+		if !strings.Contains(output, "int64=123") {
+			t.Error("Int64 field not converted")
+		}
+		if !strings.Contains(output, "float=3.14") {
+			t.Error("Float64 field not converted")
+		}
+		if !strings.Contains(output, "bool=true") {
+			t.Error("Bool field not converted")
+		}
+		if !strings.Contains(output, "duration=") {
+			t.Error("Duration field not converted")
+		}
+		if !strings.Contains(output, "error") {
+			t.Error("Error field not converted")
+		}
+	})
 }
 
 // TestFuncLogger tests the function logger adapter
@@ -537,6 +921,91 @@ func TestFuncLogger(t *testing.T) {
 			t.Errorf("Expected 2 fields, got %d", len(capturedFields))
 		}
 	})
+
+	t.Run("logs Debug messages", func(t *testing.T) {
+		var capturedLevel Level
+		var capturedMsg string
+
+		fn := func(level Level, msg string, fields []Field) {
+			capturedLevel = level
+			capturedMsg = msg
+		}
+
+		logger := NewFuncLogger(fn)
+		logger.Debug("debug message")
+
+		if capturedLevel != LevelDebug {
+			t.Errorf("Expected Debug level, got %v", capturedLevel)
+		}
+		if capturedMsg != "debug message" {
+			t.Errorf("Expected 'debug message', got %s", capturedMsg)
+		}
+	})
+
+	t.Run("logs Warn messages", func(t *testing.T) {
+		var capturedLevel Level
+		var capturedMsg string
+
+		fn := func(level Level, msg string, fields []Field) {
+			capturedLevel = level
+			capturedMsg = msg
+		}
+
+		logger := NewFuncLogger(fn)
+		logger.Warn("warning message")
+
+		if capturedLevel != LevelWarn {
+			t.Errorf("Expected Warn level, got %v", capturedLevel)
+		}
+		if capturedMsg != "warning message" {
+			t.Errorf("Expected 'warning message', got %s", capturedMsg)
+		}
+	})
+
+	t.Run("logs Error messages", func(t *testing.T) {
+		var capturedLevel Level
+		var capturedMsg string
+
+		fn := func(level Level, msg string, fields []Field) {
+			capturedLevel = level
+			capturedMsg = msg
+		}
+
+		logger := NewFuncLogger(fn)
+		logger.Error("error message")
+
+		if capturedLevel != LevelError {
+			t.Errorf("Expected Error level, got %v", capturedLevel)
+		}
+		if capturedMsg != "error message" {
+			t.Errorf("Expected 'error message', got %s", capturedMsg)
+		}
+	})
+
+	t.Run("WithContext creates logger with context", func(t *testing.T) {
+		fn := func(level Level, msg string, fields []Field) {}
+
+		logger := NewFuncLogger(fn)
+		ctx := context.Background()
+		ctxLogger := logger.WithContext(ctx)
+
+		// Should not panic, returns self
+		if ctxLogger == nil {
+			t.Error("WithContext should return a logger")
+		}
+	})
+
+	t.Run("Enabled always returns true", func(t *testing.T) {
+		fn := func(level Level, msg string, fields []Field) {}
+		logger := NewFuncLogger(fn)
+
+		if !logger.Enabled(LevelDebug) {
+			t.Error("FuncLogger should be enabled for Debug")
+		}
+		if !logger.Enabled(LevelError) {
+			t.Error("FuncLogger should be enabled for Error")
+		}
+	})
 }
 
 // TestPrintfLogger tests the printf-style logger adapter
@@ -557,6 +1026,89 @@ func TestPrintfLogger(t *testing.T) {
 		}
 		if !strings.Contains(output, "test message") {
 			t.Error("Message not included in output")
+		}
+	})
+
+	t.Run("logs Debug messages", func(t *testing.T) {
+		var output string
+		fn := func(format string, v ...interface{}) {
+			output = fmt.Sprintf(format, v...)
+		}
+
+		logger := NewPrintfLogger(fn)
+		logger.Debug("debug test")
+
+		if !strings.Contains(output, "DEBUG") {
+			t.Error("Debug level not included")
+		}
+		if !strings.Contains(output, "debug test") {
+			t.Error("Debug message not included")
+		}
+	})
+
+	t.Run("logs Warn messages", func(t *testing.T) {
+		var output string
+		fn := func(format string, v ...interface{}) {
+			output = fmt.Sprintf(format, v...)
+		}
+
+		logger := NewPrintfLogger(fn)
+		logger.Warn("warning test")
+
+		if !strings.Contains(output, "WARN") {
+			t.Error("Warn level not included")
+		}
+		if !strings.Contains(output, "warning test") {
+			t.Error("Warn message not included")
+		}
+	})
+
+	t.Run("logs Error messages", func(t *testing.T) {
+		var output string
+		fn := func(format string, v ...interface{}) {
+			output = fmt.Sprintf(format, v...)
+		}
+
+		logger := NewPrintfLogger(fn)
+		logger.Error("error test")
+
+		if !strings.Contains(output, "ERROR") {
+			t.Error("Error level not included")
+		}
+		if !strings.Contains(output, "error test") {
+			t.Error("Error message not included")
+		}
+	})
+
+	t.Run("With returns logger with fields (no-op)", func(t *testing.T) {
+		logger := NewPrintfLogger(func(format string, v ...interface{}) {})
+		child := logger.With(String("key", "value"))
+
+		// Should not panic, returns self
+		if child == nil {
+			t.Error("With should return a logger")
+		}
+	})
+
+	t.Run("WithContext returns logger (no-op)", func(t *testing.T) {
+		logger := NewPrintfLogger(func(format string, v ...interface{}) {})
+		ctx := context.Background()
+		ctxLogger := logger.WithContext(ctx)
+
+		// Should not panic, returns self
+		if ctxLogger == nil {
+			t.Error("WithContext should return a logger")
+		}
+	})
+
+	t.Run("Enabled always returns true", func(t *testing.T) {
+		logger := NewPrintfLogger(func(format string, v ...interface{}) {})
+
+		if !logger.Enabled(LevelDebug) {
+			t.Error("PrintfLogger should be enabled for Debug")
+		}
+		if !logger.Enabled(LevelError) {
+			t.Error("PrintfLogger should be enabled for Error")
 		}
 	})
 }

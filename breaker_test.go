@@ -696,3 +696,24 @@ func TestCircuitBreakerConcurrency(t *testing.T) {
 		}
 	})
 }
+
+// TestCircuitBreakerStateString tests the String() method of CircuitBreakerState
+func TestCircuitBreakerStateString(t *testing.T) {
+	tests := []struct {
+		state    breaker.CircuitBreakerState
+		expected string
+	}{
+		{breaker.Closed, "Closed"},
+		{breaker.Open, "Open"},
+		{breaker.HalfOpen, "HalfOpen"},
+		{breaker.CircuitBreakerState(999), "Unknown"}, // Invalid state
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expected, func(t *testing.T) {
+			if got := tt.state.String(); got != tt.expected {
+				t.Errorf("State.String() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}

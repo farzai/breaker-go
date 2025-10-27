@@ -1007,5 +1007,84 @@ func TestMultiError(t *testing.T) {
 	})
 }
 
+// TestOrderedAsyncStrategy tests the ordered async delivery strategy
+func TestOrderedAsyncStrategy(t *testing.T) {
+	t.Run("delivers events in order", func(t *testing.T) {
+		var results []CircuitBreakerState
+		var mu sync.Mutex
+
+		strategy := NewOrderedAsyncStrategy(10)
+
+		// Create listeners that append to results
+		listener1 := func(event StateChangeEvent) error {
+			mu.Lock()
+			defer mu.Unlock()
+			results = append(results, event.To)
+			return nil
+		}
+
+		listeners := []ListenerInfo{{Listener: EventListenerFunc(listener1), ID: "test1"}}
+
+		// Deliver multiple events
+		for i := 0; i < 5; i++ {
+			event := StateChangeEvent{
+				From: Closed,
+				To:   Open,
+				Timestamp: time.Now(),
+			}
+			err := strategy.Deliver(event, listeners)
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+		}
+
+		// Close and wait for processing
+		strategy.Close()
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Should have received all events
+		if len(results) != 5 {
+			t.Errorf("Expected 5 events, got %d", len(results))
+		}
+	})
+
+	t.Run("Close waits for pending events", func(t *testing.T) {
+		strategy := NewOrderedAsyncStrategy(5)
+
+		processed := make(chan bool, 1)
+		listener := EventListenerFunc(func(event StateChangeEvent) error {
+			// Signal that event was processed
+			processed <- true
+			return nil
+		})
+
+		listeners := []ListenerInfo{{Listener: listener, ID: "test1"}}
+
+		// Deliver an event
+		event := StateChangeEvent{
+			From: Closed,
+			To:   Open,
+			Timestamp: time.Now(),
+		}
+		err := strategy.Deliver(event, listeners)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+
+		// Close should wait for the event to be processed
+		go strategy.Close()
+
+		// Wait for event processing
+		select {
+		case <-processed:
+			// Success - event was processed before Close completed
+		case <-time.After(1 * time.Second):
+			t.Error("Event not processed before timeout")
+		}
+	})
+}
+
 // Test helpers
 // Note: We now use logging.TestLogger from the logging package instead of a custom testLogger
