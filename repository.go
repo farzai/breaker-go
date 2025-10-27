@@ -1,55 +1,110 @@
 package breaker
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
-// StateRepository defines the interface for persisting circuit breaker state.
-// Implementations must be thread-safe.
-type StateRepository interface {
-	// Save stores the current circuit breaker state.
-	Save(state CircuitBreakerState)
+// SnapshotRepository defines the interface for persisting circuit breaker snapshots.
+// Implementations must be thread-safe and handle concurrent access.
+//
+// The repository provides context-aware operations for timeout and cancellation control.
+type SnapshotRepository interface {
+	// Save stores a complete circuit breaker snapshot.
+	// Returns an error if the operation fails.
+	Save(ctx context.Context, snapshot *Snapshot) error
 
-	// Load retrieves the current circuit breaker state.
-	Load() CircuitBreakerState
+	// Load retrieves the stored snapshot.
+	// Returns ErrSnapshotNotFound if no snapshot exists.
+	Load(ctx context.Context) (*Snapshot, error)
 
-	// Reset resets the state back to Closed.
-	Reset()
+	// Exists checks if a snapshot is stored.
+	Exists(ctx context.Context) (bool, error)
+
+	// Delete removes the stored snapshot.
+	Delete(ctx context.Context) error
 }
 
-// InMemoryStateRepository provides an in-memory, thread-safe implementation
-// of StateRepository. It is suitable for single-instance applications.
-type InMemoryStateRepository struct {
-	state CircuitBreakerState
-	mutex sync.Mutex
+// InMemorySnapshotRepository provides an in-memory, thread-safe implementation
+// of SnapshotRepository. It is suitable for single-instance applications and testing.
+type InMemorySnapshotRepository struct {
+	snapshot *Snapshot
+	mutex    sync.RWMutex
 }
 
-// NewInMemoryStateRepository creates a new in-memory state repository
-// initialized with the Closed state.
-func NewInMemoryStateRepository() *InMemoryStateRepository {
-	return &InMemoryStateRepository{
-		state: Closed,
+// NewInMemorySnapshotRepository creates a new in-memory snapshot repository
+func NewInMemorySnapshotRepository() *InMemorySnapshotRepository {
+	return &InMemorySnapshotRepository{}
+}
+
+// Save stores the circuit breaker snapshot. This method is thread-safe.
+func (r *InMemorySnapshotRepository) Save(ctx context.Context, snapshot *Snapshot) error {
+	if snapshot == nil {
+		return NewValidationError("snapshot", "cannot be nil", nil)
 	}
-}
 
-// Save stores the circuit breaker state. This method is thread-safe.
-func (r *InMemoryStateRepository) Save(state CircuitBreakerState) {
+	// Check context cancellation
+	select {
+	case <-ctx.Done():
+		return NewPersistenceError("save", ctx.Err())
+	default:
+	}
+
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
-	r.state = state
+	// Store a clone to prevent external modifications
+	r.snapshot = snapshot.Clone()
+	return nil
 }
 
-// Load retrieves the current circuit breaker state. This method is thread-safe.
-func (r *InMemoryStateRepository) Load() CircuitBreakerState {
+// Load retrieves the stored snapshot. This method is thread-safe.
+func (r *InMemorySnapshotRepository) Load(ctx context.Context) (*Snapshot, error) {
+	// Check context cancellation
+	select {
+	case <-ctx.Done():
+		return nil, NewPersistenceError("load", ctx.Err())
+	default:
+	}
+
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	if r.snapshot == nil {
+		return nil, ErrSnapshotNotFound
+	}
+
+	// Return a clone to prevent external modifications
+	return r.snapshot.Clone(), nil
+}
+
+// Exists checks if a snapshot is stored. This method is thread-safe.
+func (r *InMemorySnapshotRepository) Exists(ctx context.Context) (bool, error) {
+	// Check context cancellation
+	select {
+	case <-ctx.Done():
+		return false, NewPersistenceError("exists", ctx.Err())
+	default:
+	}
+
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	return r.snapshot != nil, nil
+}
+
+// Delete removes the stored snapshot. This method is thread-safe.
+func (r *InMemorySnapshotRepository) Delete(ctx context.Context) error {
+	// Check context cancellation
+	select {
+	case <-ctx.Done():
+		return NewPersistenceError("delete", ctx.Err())
+	default:
+	}
+
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
-	return r.state
-}
-
-// Reset resets the circuit breaker state to Closed. This method is thread-safe.
-func (r *InMemoryStateRepository) Reset() {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-
-	r.state = Closed
+	r.snapshot = nil
+	return nil
 }

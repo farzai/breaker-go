@@ -4,15 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	breaker "github.com/farzai/breaker-go"
+	"github.com/farzai/breaker-go/events"
 )
 
 // Example demonstrates basic usage of the circuit breaker
 func Example() {
 	// Create a circuit breaker with 3 failure threshold and 5 second timeout
-	cb := breaker.NewCircuitBreaker(3, 5*time.Second)
+	cb, err := breaker.NewCircuitBreaker(3, 5*time.Second)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Execute a protected operation
 	result, err := cb.Execute(func() (interface{}, error) {
@@ -29,15 +34,19 @@ func Example() {
 	// Output: Result: success
 }
 
-// ExampleNewWithOptions demonstrates using functional options for configuration
-func ExampleNewWithOptions() {
-	cb := breaker.NewWithOptions(
+// ExampleNew demonstrates using functional options for configuration
+func ExampleNew() {
+	cb, err := breaker.New(
 		breaker.WithFailureThreshold(5),
 		breaker.WithResetTimeout(10*time.Second),
-		breaker.WithStateChangeCallback(func(from, to breaker.CircuitBreakerState) {
-			fmt.Printf("State changed from %d to %d\n", from, to)
-		}),
+		breaker.WithEventListener(events.EventListenerFunc(func(event events.StateChangeEvent) error {
+			fmt.Printf("State changed from %s to %s\n", event.From, event.To)
+			return nil
+		})),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Use the circuit breaker
 	result, err := cb.Execute(func() (interface{}, error) {
@@ -52,7 +61,10 @@ func ExampleNewWithOptions() {
 
 // ExampleCircuitBreaker_ExecuteWithContext demonstrates context-based execution
 func ExampleCircuitBreaker_ExecuteWithContext() {
-	cb := breaker.NewCircuitBreaker(3, 5*time.Second)
+	cb, err := breaker.NewCircuitBreaker(3, 5*time.Second)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -80,7 +92,10 @@ func ExampleCircuitBreaker_ExecuteWithContext() {
 
 // ExampleCircuitBreaker_State demonstrates checking circuit breaker state
 func ExampleCircuitBreaker_State() {
-	cb := breaker.NewCircuitBreaker(2, 1*time.Second)
+	cb, err := breaker.NewCircuitBreaker(2, 1*time.Second)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	fmt.Println("Initial state:", cb.State() == breaker.Closed)
 
@@ -98,20 +113,22 @@ func ExampleCircuitBreaker_State() {
 	// After failures: true
 }
 
-// ExampleWithObserver demonstrates using an observer for state changes
-func ExampleWithObserver() {
-	// Create a logging observer
-	observer := &breaker.LoggingObserver{
-		LogFunc: func(msg string) {
-			fmt.Println("Observer:", msg)
-		},
-	}
+// ExampleWithEventListener demonstrates using an event listener for state changes
+func ExampleWithEventListener() {
+	// Create an event listener
+	listener := events.EventListenerFunc(func(event events.StateChangeEvent) error {
+		fmt.Printf("Observer: Circuit breaker state changed from %s to %s\n", event.From, event.To)
+		return nil
+	})
 
-	cb := breaker.NewWithOptions(
+	cb, err := breaker.New(
 		breaker.WithFailureThreshold(2),
 		breaker.WithResetTimeout(1*time.Second),
-		breaker.WithObserver(observer),
+		breaker.WithEventListener(listener),
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Trigger failures to change state
 	cb.Execute(func() (interface{}, error) {
@@ -121,7 +138,7 @@ func ExampleWithObserver() {
 		return nil, errors.New("failure")
 	})
 
-	// Give goroutine time to notify observer
+	// Give goroutine time to notify listener
 	time.Sleep(10 * time.Millisecond)
 
 	fmt.Println("Circuit breaker state changed")

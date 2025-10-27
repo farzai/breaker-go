@@ -41,9 +41,11 @@ package breaker
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
+
+	"github.com/farzai/breaker-go/events"
+	"github.com/farzai/breaker-go/logging"
 )
 
 // CircuitBreakerState represents the current state of the circuit breaker.
@@ -58,11 +60,21 @@ const (
 	HalfOpen
 )
 
-var (
-	// ErrCircuitBreakerOpen is returned when the circuit breaker is open
-	// and requests are being blocked.
-	ErrCircuitBreakerOpen = errors.New("circuit breaker is open")
-)
+// String returns the string representation of the circuit breaker state.
+func (s CircuitBreakerState) String() string {
+	switch s {
+	case Closed:
+		return "Closed"
+	case Open:
+		return "Open"
+	case HalfOpen:
+		return "HalfOpen"
+	default:
+		return "Unknown"
+	}
+}
+
+// Removed: ErrCircuitBreakerOpen now defined in errors.go
 
 // CircuitBreaker interface defines the contract for circuit breaker implementations.
 // All methods are thread-safe and can be called concurrently.
@@ -95,67 +107,31 @@ type CircuitBreaker interface {
 }
 
 type CircuitBreakerImpl struct {
-	state            CircuitBreakerState
-	currentState     State
-	failureCount     int
-	failureThreshold int
-	resetTimeout     time.Duration
-	mutex            sync.Mutex
-	lastFailure      time.Time
-	storage          StateRepository
-	observers        []StateObserver
-	onStateChange    func(from, to CircuitBreakerState)
+	currentState       State
+	failureCount       int
+	failureThreshold   int
+	resetTimeout       time.Duration
+	mutex              sync.Mutex
+	lastFailure        time.Time
+	persistenceManager *PersistenceManager
+	eventBus           *events.EventBus
+	logger             logging.Logger
 }
 
 // NewCircuitBreaker creates a new circuit breaker with the given parameters.
-// It panics if failureThreshold <= 0 or resetTimeout <= 0.
+// This is a convenience function that wraps New() with basic configuration.
 //
 // Example:
 //
-//	breaker := NewCircuitBreaker(3, 5*time.Second)	// 3 failures in 5 seconds
-func NewCircuitBreaker(failureThreshold int, resetTimeout time.Duration) CircuitBreaker {
-	if failureThreshold <= 0 {
-		panic("failureThreshold must be greater than 0")
-	}
-	if resetTimeout <= 0 {
-		panic("resetTimeout must be greater than 0")
-	}
-	return NewCircuitBreakerWithStorage(
-		failureThreshold,
-		resetTimeout,
-		NewInMemoryStateRepository(),
+//	breaker, err := NewCircuitBreaker(3, 5*time.Second)  // 3 failures in 5 seconds
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+func NewCircuitBreaker(failureThreshold int, resetTimeout time.Duration) (CircuitBreaker, error) {
+	return New(
+		WithFailureThreshold(failureThreshold),
+		WithResetTimeout(resetTimeout),
 	)
-}
-
-// NewCircuitBreakerWithStorage creates a new circuit breaker with custom storage.
-// It panics if failureThreshold <= 0, resetTimeout <= 0, or storage is nil.
-//
-// Example:
-//
-//	breaker := NewCircuitBreakerWithStorage(
-//		3,
-//		5*time.Second,
-//		NewInMemoryStateRepository(), // Or your own implementation of breaker.StateRepository
-//	)	// 3 failures in 5 seconds
-func NewCircuitBreakerWithStorage(failureThreshold int, resetTimeout time.Duration, storage StateRepository) CircuitBreaker {
-	if failureThreshold <= 0 {
-		panic("failureThreshold must be greater than 0")
-	}
-	if resetTimeout <= 0 {
-		panic("resetTimeout must be greater than 0")
-	}
-	if storage == nil {
-		panic("storage must not be nil")
-	}
-	cb := &CircuitBreakerImpl{
-		state:            Closed,
-		currentState:     &ClosedState{},
-		failureThreshold: failureThreshold,
-		resetTimeout:     resetTimeout,
-		storage:          storage,
-	}
-	cb.currentState.OnEntry(cb)
-	return cb
 }
 
 func (c *CircuitBreakerImpl) Execute(action func() (interface{}, error)) (interface{}, error) {
@@ -164,8 +140,30 @@ func (c *CircuitBreakerImpl) Execute(action func() (interface{}, error)) (interf
 	state := c.currentState
 	c.mutex.Unlock()
 
-	// Delegate to the current state
-	return state.Execute(c, action)
+	if c.logger != nil && c.logger.Enabled(logging.LevelDebug) {
+		c.logger.Debug("Executing action",
+			logging.String("state", state.Name().String()),
+		)
+	}
+
+	// Delegate to the current state with background context
+	result, err := state.Execute(context.Background(), c, action)
+
+	if c.logger != nil && err != nil {
+		if err == ErrCircuitBreakerOpen {
+			c.logger.Warn("Action blocked by circuit breaker",
+				logging.String("state", "Open"),
+				logging.Error(err),
+			)
+		} else {
+			c.logger.Debug("Action execution failed",
+				logging.String("state", state.Name().String()),
+				logging.Error(err),
+			)
+		}
+	}
+
+	return result, err
 }
 
 // ExecuteWithContext runs the action with context support
@@ -177,7 +175,7 @@ func (c *CircuitBreakerImpl) ExecuteWithContext(ctx context.Context, action func
 	default:
 	}
 
-	// Get current state with mutex protection
+	// Get current state
 	c.mutex.Lock()
 	state := c.currentState
 	c.mutex.Unlock()
@@ -187,8 +185,8 @@ func (c *CircuitBreakerImpl) ExecuteWithContext(ctx context.Context, action func
 		return action(ctx)
 	}
 
-	// Delegate to the current state
-	return state.Execute(c, wrappedAction)
+	// Delegate to the current state, passing context for event propagation
+	return state.Execute(ctx, c, wrappedAction)
 }
 
 func (c *CircuitBreakerImpl) State() CircuitBreakerState {
@@ -197,60 +195,73 @@ func (c *CircuitBreakerImpl) State() CircuitBreakerState {
 
 	// Check if we need to transition from Open to HalfOpen
 	if c.currentState.Name() == Open && time.Since(c.lastFailure) >= c.resetTimeout {
-		c.transitionTo(&HalfOpenState{})
+		c.transitionTo(context.Background(), &HalfOpenState{})
 	}
 
 	return c.currentState.Name()
 }
 
-// transitionTo changes the state (must be called with mutex held)
-func (c *CircuitBreakerImpl) transitionTo(newState State) {
+// transitionTo changes the state (must be called with mutex held).
+// ctx is the context from the current execution for event propagation and tracing.
+func (c *CircuitBreakerImpl) transitionTo(ctx context.Context, newState State) {
 	if c.currentState != nil {
 		c.currentState.OnExit(c)
 	}
 
-	oldState := c.state
-	c.currentState = newState
-	c.state = newState.Name()
-	c.storage.Save(c.state)
+	// Capture old state before transition
+	oldState := c.currentState.Name()
 
+	// Update state
+	c.currentState = newState
+	newStateName := newState.Name()
+
+	if c.logger != nil {
+		c.logger.Info("Circuit breaker state transition",
+			logging.String("from", oldState.String()),
+			logging.String("to", newStateName.String()),
+			logging.Int("failure_count", c.failureCount),
+			logging.Int("failure_threshold", c.failureThreshold),
+		)
+	}
+
+	// Call OnEntry which may modify internal state (failureCount, lastFailure)
 	c.currentState.OnEntry(c)
 
-	// Notify observers (in background to avoid blocking)
-	go c.notifyStateChange(oldState, c.state)
-}
+	// Create snapshot AFTER OnEntry to capture complete state
+	snapshot := FromCircuitBreaker(c)
 
-// notifyStateChange notifies all observers about a state change
-func (c *CircuitBreakerImpl) notifyStateChange(from, to CircuitBreakerState) {
-	// Call the callback if set (with panic recovery)
-	if c.onStateChange != nil {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					// Callback panicked, ignore and continue
-				}
-			}()
-			c.onStateChange(from, to)
-		}()
+	// Persist using persistence manager (handles validation, retry, async)
+	// Note: errors are handled internally by persistence manager
+	// (logged or passed to error handlers)
+	_ = c.persistenceManager.Save(snapshot)
+
+	// Publish state change event using the EventBus
+	event := events.StateChangeEvent{
+		From:      events.CircuitBreakerState(oldState),
+		To:        events.CircuitBreakerState(newStateName),
+		Timestamp: time.Now(),
+		Context:   ctx,
+		Metadata: map[string]interface{}{
+			"failure_count":     c.failureCount,
+			"failure_threshold": c.failureThreshold,
+			"last_failure":      c.lastFailure,
+		},
 	}
 
-	// Notify all observers (with panic recovery for each)
-	ctx := context.Background()
-	for _, observer := range c.observers {
-		func(obs StateObserver) {
-			defer func() {
-				if r := recover(); r != nil {
-					// Observer panicked, ignore and continue
-				}
-			}()
-			obs.OnStateChange(ctx, from, to)
-		}(observer)
-	}
+	// Publish asynchronously to avoid blocking
+	c.eventBus.PublishAsync(event)
 }
 
 func (c *CircuitBreakerImpl) Reset() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+
+	if c.logger != nil {
+		c.logger.Info("Manually resetting circuit breaker",
+			logging.String("current_state", c.currentState.Name().String()),
+			logging.Int("failure_count", c.failureCount),
+		)
+	}
 
 	// Reset the failure count
 	c.failureCount = 0
@@ -259,5 +270,5 @@ func (c *CircuitBreakerImpl) Reset() {
 	c.lastFailure = time.Time{}
 
 	// Transition to closed state
-	c.transitionTo(&ClosedState{})
+	c.transitionTo(context.Background(), &ClosedState{})
 }

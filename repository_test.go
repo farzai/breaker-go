@@ -1,162 +1,333 @@
 package breaker_test
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	breaker "github.com/farzai/breaker-go"
 )
 
-func TestInMemoryStateStorage(t *testing.T) {
+func TestInMemorySnapshotRepository(t *testing.T) {
+	t.Run("Save and Load snapshot", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx := context.Background()
 
-	t.Run("Should be standby when initialized", func(t *testing.T) {
-		storage := breaker.NewInMemoryStateRepository()
+		snapshot := breaker.NewSnapshotBuilder().
+			WithState(breaker.Open).
+			WithFailureCount(5).
+			WithConfig(3, 1*time.Second).
+			Build()
 
-		if storage.Load() != breaker.Closed {
-			t.Errorf("Expected initial state to be Closed, got %v", storage.Load())
+		err := repo.Save(ctx, snapshot)
+		if err != nil {
+			t.Fatalf("Failed to save snapshot: %v", err)
+		}
+
+		loaded, err := repo.Load(ctx)
+		if err != nil {
+			t.Fatalf("Failed to load snapshot: %v", err)
+		}
+
+		if loaded.State != breaker.Open {
+			t.Errorf("Expected state Open, got %v", loaded.State)
+		}
+		if loaded.FailureCount != 5 {
+			t.Errorf("Expected failure count 5, got %d", loaded.FailureCount)
 		}
 	})
 
-	t.Run("Should be open when set to open", func(t *testing.T) {
-		storage := breaker.NewInMemoryStateRepository()
+	t.Run("Load returns error when no snapshot exists", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx := context.Background()
 
-		storage.Save(breaker.Open)
-
-		if storage.Load() != breaker.Open {
-			t.Errorf("Expected state to be Open, got %v", storage.Load())
+		_, err := repo.Load(ctx)
+		if !errors.Is(err, breaker.ErrSnapshotNotFound) {
+			t.Errorf("Expected ErrSnapshotNotFound, got %v", err)
 		}
 	})
 
-	t.Run("Should be closed when set to closed", func(t *testing.T) {
-		storage := breaker.NewInMemoryStateRepository()
+	t.Run("Save with nil snapshot returns error", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx := context.Background()
 
-		storage.Save(breaker.Closed)
+		err := repo.Save(ctx, nil)
+		if err == nil {
+			t.Error("Expected error when saving nil snapshot")
+		}
 
-		if storage.Load() != breaker.Closed {
-			t.Errorf("Expected state to be Closed, got %v", storage.Load())
+		var valErr *breaker.ValidationError
+		if !errors.As(err, &valErr) {
+			t.Errorf("Expected ValidationError, got %T", err)
 		}
 	})
 
-	t.Run("Should be half open when set to half open", func(t *testing.T) {
-		storage := breaker.NewInMemoryStateRepository()
+	t.Run("Exists returns true when snapshot exists", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx := context.Background()
 
-		storage.Save(breaker.HalfOpen)
+		snapshot := breaker.NewSnapshotBuilder().Build()
+		repo.Save(ctx, snapshot)
 
-		if storage.Load() != breaker.HalfOpen {
-			t.Errorf("Expected state to be HalfOpen, got %v", storage.Load())
+		exists, err := repo.Exists(ctx)
+		if err != nil {
+			t.Fatalf("Exists failed: %v", err)
+		}
+		if !exists {
+			t.Error("Expected exists to return true")
 		}
 	})
 
-	t.Run("Should be standby when reset", func(t *testing.T) {
-		storage := breaker.NewInMemoryStateRepository()
+	t.Run("Exists returns false when no snapshot", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx := context.Background()
 
-		storage.Save(breaker.Open)
-		storage.Reset()
-
-		if storage.Load() != breaker.Closed {
-			t.Errorf("Expected state to be Closed, got %v", storage.Load())
+		exists, err := repo.Exists(ctx)
+		if err != nil {
+			t.Fatalf("Exists failed: %v", err)
+		}
+		if exists {
+			t.Error("Expected exists to return false")
 		}
 	})
 
-	t.Run("Should be thread-safe for concurrent Save operations", func(t *testing.T) {
-		storage := breaker.NewInMemoryStateRepository()
-		const numGoroutines = 100
-		const numOperations = 50
+	t.Run("Delete removes snapshot", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx := context.Background()
 
+		snapshot := breaker.NewSnapshotBuilder().Build()
+		repo.Save(ctx, snapshot)
+
+		err := repo.Delete(ctx)
+		if err != nil {
+			t.Fatalf("Delete failed: %v", err)
+		}
+
+		exists, _ := repo.Exists(ctx)
+		if exists {
+			t.Error("Expected snapshot to be deleted")
+		}
+	})
+
+	t.Run("Delete on empty repository does not error", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx := context.Background()
+
+		err := repo.Delete(ctx)
+		if err != nil {
+			t.Errorf("Expected no error, got %v", err)
+		}
+	})
+
+	t.Run("Save with canceled context returns error", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
+		snapshot := breaker.NewSnapshotBuilder().Build()
+		err := repo.Save(ctx, snapshot)
+
+		if err == nil {
+			t.Error("Expected error with canceled context")
+		}
+
+		var persistErr *breaker.PersistenceError
+		if !errors.As(err, &persistErr) {
+			t.Errorf("Expected PersistenceError, got %T", err)
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Expected context.Canceled in error chain, got %v", err)
+		}
+	})
+
+	t.Run("Load with canceled context returns error", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		snapshot := breaker.NewSnapshotBuilder().Build()
+		repo.Save(context.Background(), snapshot)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := repo.Load(ctx)
+		if err == nil {
+			t.Error("Expected error with canceled context")
+		}
+
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Expected context.Canceled in error chain, got %v", err)
+		}
+	})
+
+	t.Run("Exists with canceled context returns error", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := repo.Exists(ctx)
+		if err == nil {
+			t.Error("Expected error with canceled context")
+		}
+
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Expected context.Canceled in error chain, got %v", err)
+		}
+	})
+
+	t.Run("Delete with canceled context returns error", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := repo.Delete(ctx)
+		if err == nil {
+			t.Error("Expected error with canceled context")
+		}
+
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Expected context.Canceled in error chain, got %v", err)
+		}
+	})
+
+	t.Run("Snapshots are cloned on save to prevent external modification", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx := context.Background()
+
+		snapshot := breaker.NewSnapshotBuilder().
+			WithFailureCount(5).
+			WithMetadata("key", "original").
+			Build()
+
+		repo.Save(ctx, snapshot)
+
+		// Modify original snapshot's metadata (attempt external modification)
+		if snapshot.Metadata != nil {
+			snapshot.Metadata["key"] = "modified"
+		}
+
+		// Load and verify it wasn't affected
+		loaded, _ := repo.Load(ctx)
+		if loaded.Metadata["key"] != "original" {
+			t.Errorf("Expected metadata to be 'original', got %v (snapshot was not cloned properly)", loaded.Metadata["key"])
+		}
+	})
+
+	t.Run("Snapshots are cloned on load to prevent external modification", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx := context.Background()
+
+		snapshot := breaker.NewSnapshotBuilder().
+			WithMetadata("key", "original").
+			Build()
+
+		repo.Save(ctx, snapshot)
+
+		// Load and modify
+		loaded1, _ := repo.Load(ctx)
+		if loaded1.Metadata != nil {
+			loaded1.Metadata["key"] = "modified"
+		}
+
+		// Load again and verify it wasn't affected
+		loaded2, _ := repo.Load(ctx)
+		if loaded2.Metadata["key"] != "original" {
+			t.Errorf("Expected metadata to be 'original', got %v (snapshot was not cloned properly)", loaded2.Metadata["key"])
+		}
+	})
+
+	t.Run("Concurrent Save operations are thread-safe", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx := context.Background()
+
+		const numGoroutines = 50
 		var wg sync.WaitGroup
 		wg.Add(numGoroutines)
 
-		// Launch multiple goroutines performing Save operations
 		for i := 0; i < numGoroutines; i++ {
-			go func(id int) {
+			go func(count int) {
 				defer wg.Done()
-				for j := 0; j < numOperations; j++ {
-					// Cycle through states
-					state := breaker.CircuitBreakerState(j % 3)
-					storage.Save(state)
-				}
+				snapshot := breaker.NewSnapshotBuilder().
+					WithFailureCount(count).
+					Build()
+				repo.Save(ctx, snapshot)
 			}(i)
 		}
 
 		wg.Wait()
 
-		// Verify we can still read the state without error
-		_ = storage.Load()
+		// Verify we can load without panic
+		loaded, err := repo.Load(ctx)
+		if err != nil {
+			t.Errorf("Failed to load after concurrent saves: %v", err)
+		}
+		if loaded == nil {
+			t.Error("Expected snapshot to be loaded")
+		}
 	})
 
-	t.Run("Should be thread-safe for concurrent Load operations", func(t *testing.T) {
-		storage := breaker.NewInMemoryStateRepository()
-		storage.Save(breaker.Open)
-		const numGoroutines = 100
-		const numOperations = 50
+	t.Run("Concurrent Load operations are thread-safe", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx := context.Background()
 
+		snapshot := breaker.NewSnapshotBuilder().
+			WithFailureCount(10).
+			Build()
+		repo.Save(ctx, snapshot)
+
+		const numGoroutines = 100
 		var wg sync.WaitGroup
 		wg.Add(numGoroutines)
 
-		// Launch multiple goroutines performing Load operations
+		errors := make(chan error, numGoroutines)
+
 		for i := 0; i < numGoroutines; i++ {
 			go func() {
 				defer wg.Done()
-				for j := 0; j < numOperations; j++ {
-					_ = storage.Load()
+				_, err := repo.Load(ctx)
+				if err != nil {
+					errors <- err
 				}
 			}()
 		}
 
 		wg.Wait()
+		close(errors)
+
+		for err := range errors {
+			t.Errorf("Concurrent load failed: %v", err)
+		}
 	})
 
-	t.Run("Should be thread-safe for mixed Save and Load operations", func(t *testing.T) {
-		storage := breaker.NewInMemoryStateRepository()
+	t.Run("Concurrent mixed operations are thread-safe", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
+		ctx := context.Background()
+
 		const numGoroutines = 100
-
 		var wg sync.WaitGroup
 		wg.Add(numGoroutines)
 
-		// Half save, half load
 		for i := 0; i < numGoroutines; i++ {
-			if i%2 == 0 {
-				go func(id int) {
-					defer wg.Done()
-					for j := 0; j < 50; j++ {
-						state := breaker.CircuitBreakerState(j % 3)
-						storage.Save(state)
-					}
-				}(i)
-			} else {
-				go func() {
-					defer wg.Done()
-					for j := 0; j < 50; j++ {
-						_ = storage.Load()
-					}
-				}()
-			}
-		}
-
-		wg.Wait()
-	})
-
-	t.Run("Should be thread-safe for concurrent Reset operations", func(t *testing.T) {
-		storage := breaker.NewInMemoryStateRepository()
-		storage.Save(breaker.Open)
-		const numGoroutines = 50
-
-		var wg sync.WaitGroup
-		wg.Add(numGoroutines)
-
-		// Launch multiple goroutines performing Reset operations
-		for i := 0; i < numGoroutines; i++ {
-			go func() {
+			go func(id int) {
 				defer wg.Done()
-				storage.Reset()
-			}()
+
+				switch id % 4 {
+				case 0: // Save
+					snapshot := breaker.NewSnapshotBuilder().
+						WithFailureCount(id).
+						Build()
+					repo.Save(ctx, snapshot)
+				case 1: // Load
+					repo.Load(ctx)
+				case 2: // Exists
+					repo.Exists(ctx)
+				case 3: // Delete
+					repo.Delete(ctx)
+				}
+			}(i)
 		}
 
 		wg.Wait()
-
-		// Verify state is Closed
-		if storage.Load() != breaker.Closed {
-			t.Errorf("Expected state to be Closed after concurrent resets, got %v", storage.Load())
-		}
+		// Test passes if no race conditions or panics occur
 	})
 }
