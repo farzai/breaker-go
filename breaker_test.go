@@ -1,6 +1,7 @@
 package breaker_test
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -176,6 +177,207 @@ func TestCircuitBreakerState(t *testing.T) {
 			t.Errorf("Expected state to be Closed, got %v", cb.State())
 		}
 	})
+}
+
+// TestWithStorageOption tests the WithStorage option
+func TestWithStorageOption(t *testing.T) {
+	t.Run("Should use custom storage", func(t *testing.T) {
+		storage := breaker.NewInMemoryStateRepository()
+
+		cb := breaker.NewWithOptions(
+			breaker.WithFailureThreshold(3),
+			breaker.WithResetTimeout(1*time.Second),
+			breaker.WithStorage(storage),
+		)
+
+		// Trigger open state
+		for i := 0; i < 3; i++ {
+			cb.Execute(func() (interface{}, error) {
+				return nil, errors.New("error")
+			})
+		}
+
+		// Verify state is saved to storage
+		if storage.Load() != breaker.Open {
+			t.Errorf("Expected storage to contain Open state, got %v", storage.Load())
+		}
+	})
+}
+
+// TestExecuteWithContext tests ExecuteWithContext method
+func TestExecuteWithContext(t *testing.T) {
+	t.Run("Should return error when context is cancelled before execution", func(t *testing.T) {
+		cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
+		_, err := cb.ExecuteWithContext(ctx, func(ctx context.Context) (interface{}, error) {
+			return "success", nil
+		})
+
+		if err != context.Canceled {
+			t.Errorf("Expected context.Canceled error, got %v", err)
+		}
+	})
+
+	t.Run("Should handle context timeout during execution", func(t *testing.T) {
+		cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+
+		_, err := cb.ExecuteWithContext(ctx, func(ctx context.Context) (interface{}, error) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+				return "success", nil
+			}
+		})
+
+		if err != context.DeadlineExceeded {
+			t.Errorf("Expected context.DeadlineExceeded error, got %v", err)
+		}
+	})
+
+	t.Run("Should execute successfully with valid context", func(t *testing.T) {
+		cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+		ctx := context.Background()
+
+		result, err := cb.ExecuteWithContext(ctx, func(ctx context.Context) (interface{}, error) {
+			return "success", nil
+		})
+
+		if err != nil {
+			t.Errorf("Expected no error, got %v", err)
+		}
+
+		if result != "success" {
+			t.Errorf("Expected result to be 'success', got %v", result)
+		}
+	})
+}
+
+// TestStateObserversAndCallbacks tests state change observers and callbacks
+func TestStateObserversAndCallbacks(t *testing.T) {
+	t.Run("Should notify state change callback", func(t *testing.T) {
+		var callbackCalled bool
+		var fromState, toState breaker.CircuitBreakerState
+
+		cb := breaker.NewWithOptions(
+			breaker.WithFailureThreshold(3),
+			breaker.WithResetTimeout(1*time.Second),
+			breaker.WithStateChangeCallback(func(from, to breaker.CircuitBreakerState) {
+				callbackCalled = true
+				fromState = from
+				toState = to
+			}),
+		)
+
+		// Trigger state change
+		for i := 0; i < 3; i++ {
+			cb.Execute(func() (interface{}, error) {
+				return nil, errors.New("error")
+			})
+		}
+
+		// Wait for callback to be called (it runs in a goroutine)
+		time.Sleep(50 * time.Millisecond)
+
+		if !callbackCalled {
+			t.Error("Expected callback to be called")
+		}
+
+		if fromState != breaker.Closed || toState != breaker.Open {
+			t.Errorf("Expected state change from Closed to Open, got %v to %v", fromState, toState)
+		}
+	})
+
+	t.Run("Should notify multiple observers", func(t *testing.T) {
+		observer1Called := false
+		observer2Called := false
+
+		observer1 := &testObserver{
+			onStateChange: func(ctx context.Context, from, to breaker.CircuitBreakerState) {
+				observer1Called = true
+			},
+		}
+
+		observer2 := &testObserver{
+			onStateChange: func(ctx context.Context, from, to breaker.CircuitBreakerState) {
+				observer2Called = true
+			},
+		}
+
+		cb := breaker.NewWithOptions(
+			breaker.WithFailureThreshold(3),
+			breaker.WithResetTimeout(1*time.Second),
+			breaker.WithObserver(observer1),
+			breaker.WithObserver(observer2),
+		)
+
+		// Trigger state change
+		for i := 0; i < 3; i++ {
+			cb.Execute(func() (interface{}, error) {
+				return nil, errors.New("error")
+			})
+		}
+
+		// Wait for observers to be notified (they run in a goroutine)
+		time.Sleep(50 * time.Millisecond)
+
+		if !observer1Called {
+			t.Error("Expected observer1 to be called")
+		}
+
+		if !observer2Called {
+			t.Error("Expected observer2 to be called")
+		}
+	})
+
+	t.Run("Should handle logging observer", func(t *testing.T) {
+		var logMessage string
+		observer := &breaker.LoggingObserver{
+			LogFunc: func(msg string) {
+				logMessage = msg
+			},
+		}
+
+		cb := breaker.NewWithOptions(
+			breaker.WithFailureThreshold(3),
+			breaker.WithResetTimeout(1*time.Second),
+			breaker.WithObserver(observer),
+		)
+
+		// Trigger state change
+		for i := 0; i < 3; i++ {
+			cb.Execute(func() (interface{}, error) {
+				return nil, errors.New("error")
+			})
+		}
+
+		// Wait for observer to be notified
+		time.Sleep(50 * time.Millisecond)
+
+		if logMessage == "" {
+			t.Error("Expected log message to be set")
+		}
+
+		expectedMsg := "Circuit breaker state changed from Closed to Open"
+		if logMessage != expectedMsg {
+			t.Errorf("Expected log message '%s', got '%s'", expectedMsg, logMessage)
+		}
+	})
+}
+
+// testObserver is a helper for testing observers
+type testObserver struct {
+	onStateChange func(ctx context.Context, from, to breaker.CircuitBreakerState)
+}
+
+func (o *testObserver) OnStateChange(ctx context.Context, from, to breaker.CircuitBreakerState) {
+	if o.onStateChange != nil {
+		o.onStateChange(ctx, from, to)
+	}
 }
 
 // TestCircuitBreakerConcurrency tests concurrent access to the circuit breaker
