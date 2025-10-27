@@ -52,7 +52,10 @@ func WithStateChangeCallback(callback func(from, to CircuitBreakerState)) Option
 	}
 }
 
-// NewWithOptions creates a new CircuitBreaker with functional options
+// NewWithOptions creates a new CircuitBreaker with functional options.
+// Default values: failureThreshold=5, resetTimeout=5s, storage=InMemoryStateRepository.
+// It panics if the configured failureThreshold <= 0, resetTimeout <= 0, or storage is nil.
+//
 // Example:
 //
 //	cb := breaker.NewWithOptions(
@@ -74,6 +77,17 @@ func NewWithOptions(opts ...Option) CircuitBreaker {
 	// Apply options
 	for _, opt := range opts {
 		opt(cfg)
+	}
+
+	// Validate configuration
+	if cfg.failureThreshold <= 0 {
+		panic("failureThreshold must be greater than 0")
+	}
+	if cfg.resetTimeout <= 0 {
+		panic("resetTimeout must be greater than 0")
+	}
+	if cfg.storage == nil {
+		panic("storage must not be nil")
 	}
 
 	cb := &CircuitBreakerImpl{

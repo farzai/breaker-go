@@ -107,11 +107,19 @@ type CircuitBreakerImpl struct {
 	onStateChange    func(from, to CircuitBreakerState)
 }
 
-// NewCircuitBreaker
+// NewCircuitBreaker creates a new circuit breaker with the given parameters.
+// It panics if failureThreshold <= 0 or resetTimeout <= 0.
+//
 // Example:
 //
 //	breaker := NewCircuitBreaker(3, 5*time.Second)	// 3 failures in 5 seconds
 func NewCircuitBreaker(failureThreshold int, resetTimeout time.Duration) CircuitBreaker {
+	if failureThreshold <= 0 {
+		panic("failureThreshold must be greater than 0")
+	}
+	if resetTimeout <= 0 {
+		panic("resetTimeout must be greater than 0")
+	}
 	return NewCircuitBreakerWithStorage(
 		failureThreshold,
 		resetTimeout,
@@ -119,7 +127,9 @@ func NewCircuitBreaker(failureThreshold int, resetTimeout time.Duration) Circuit
 	)
 }
 
-// NewCircuitBreakerWithStorage
+// NewCircuitBreakerWithStorage creates a new circuit breaker with custom storage.
+// It panics if failureThreshold <= 0, resetTimeout <= 0, or storage is nil.
+//
 // Example:
 //
 //	breaker := NewCircuitBreakerWithStorage(
@@ -128,6 +138,15 @@ func NewCircuitBreaker(failureThreshold int, resetTimeout time.Duration) Circuit
 //		NewInMemoryStateRepository(), // Or your own implementation of breaker.StateRepository
 //	)	// 3 failures in 5 seconds
 func NewCircuitBreakerWithStorage(failureThreshold int, resetTimeout time.Duration, storage StateRepository) CircuitBreaker {
+	if failureThreshold <= 0 {
+		panic("failureThreshold must be greater than 0")
+	}
+	if resetTimeout <= 0 {
+		panic("resetTimeout must be greater than 0")
+	}
+	if storage == nil {
+		panic("storage must not be nil")
+	}
 	cb := &CircuitBreakerImpl{
 		state:            Closed,
 		currentState:     &ClosedState{},
@@ -203,15 +222,29 @@ func (c *CircuitBreakerImpl) transitionTo(newState State) {
 
 // notifyStateChange notifies all observers about a state change
 func (c *CircuitBreakerImpl) notifyStateChange(from, to CircuitBreakerState) {
-	// Call the callback if set
+	// Call the callback if set (with panic recovery)
 	if c.onStateChange != nil {
-		c.onStateChange(from, to)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// Callback panicked, ignore and continue
+				}
+			}()
+			c.onStateChange(from, to)
+		}()
 	}
 
-	// Notify all observers
+	// Notify all observers (with panic recovery for each)
 	ctx := context.Background()
 	for _, observer := range c.observers {
-		observer.OnStateChange(ctx, from, to)
+		func(obs StateObserver) {
+			defer func() {
+				if r := recover(); r != nil {
+					// Observer panicked, ignore and continue
+				}
+			}()
+			obs.OnStateChange(ctx, from, to)
+		}(observer)
 	}
 }
 
@@ -228,4 +261,3 @@ func (c *CircuitBreakerImpl) Reset() {
 	// Transition to closed state
 	c.transitionTo(&ClosedState{})
 }
-
