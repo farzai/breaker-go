@@ -15,13 +15,13 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        go: ["1.18", "1.19", "1.20"]
+        go: ["1.21", "1.22", "1.23"]
         include:
-          - go: "1.18"
+          - go: "1.21"
             analysis: true
-          - go: "1.19"
+          - go: "1.22"
             analysis: true
-          - go: "1.20"
+          - go: "1.23"
             analysis: true
     name: GO ${{ matrix.go }}
 
