@@ -4,6 +4,9 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/farzai/breaker-go)](https://goreportcard.com/report/github.com/farzai/breaker-go)
 ![Github Actions](https://github.com/farzai/breaker-go/actions/workflows/ci.yaml/badge.svg?branch=main)
 [![codecov](https://codecov.io/gh/farzai/breaker-go/branch/main/graph/badge.svg)](https://codecov.io/gh/farzai/breaker-go)
+[![GitHub release](https://img.shields.io/github/v/release/farzai/breaker-go)](https://github.com/farzai/breaker-go/releases)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/farzai/breaker-go)](https://github.com/farzai/breaker-go/blob/main/go.mod)
+[![License](https://img.shields.io/github/license/farzai/breaker-go)](https://github.com/farzai/breaker-go/blob/main/LICENSE)
 
 This repository contains a simple implementation of the Circuit Breaker in Golang.
 
