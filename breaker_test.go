@@ -260,6 +260,7 @@ func TestExecuteWithContext(t *testing.T) {
 // TestStateObserversAndCallbacks tests state change observers and callbacks
 func TestStateObserversAndCallbacks(t *testing.T) {
 	t.Run("Should notify state change callback", func(t *testing.T) {
+		var mu sync.Mutex
 		var callbackCalled bool
 		var fromState, toState breaker.CircuitBreakerState
 
@@ -267,6 +268,8 @@ func TestStateObserversAndCallbacks(t *testing.T) {
 			breaker.WithFailureThreshold(3),
 			breaker.WithResetTimeout(1*time.Second),
 			breaker.WithStateChangeCallback(func(from, to breaker.CircuitBreakerState) {
+				mu.Lock()
+				defer mu.Unlock()
 				callbackCalled = true
 				fromState = from
 				toState = to
@@ -283,6 +286,9 @@ func TestStateObserversAndCallbacks(t *testing.T) {
 		// Wait for callback to be called (it runs in a goroutine)
 		time.Sleep(50 * time.Millisecond)
 
+		mu.Lock()
+		defer mu.Unlock()
+
 		if !callbackCalled {
 			t.Error("Expected callback to be called")
 		}
@@ -293,17 +299,22 @@ func TestStateObserversAndCallbacks(t *testing.T) {
 	})
 
 	t.Run("Should notify multiple observers", func(t *testing.T) {
+		var mu sync.Mutex
 		observer1Called := false
 		observer2Called := false
 
 		observer1 := &testObserver{
 			onStateChange: func(ctx context.Context, from, to breaker.CircuitBreakerState) {
+				mu.Lock()
+				defer mu.Unlock()
 				observer1Called = true
 			},
 		}
 
 		observer2 := &testObserver{
 			onStateChange: func(ctx context.Context, from, to breaker.CircuitBreakerState) {
+				mu.Lock()
+				defer mu.Unlock()
 				observer2Called = true
 			},
 		}
@@ -325,6 +336,9 @@ func TestStateObserversAndCallbacks(t *testing.T) {
 		// Wait for observers to be notified (they run in a goroutine)
 		time.Sleep(50 * time.Millisecond)
 
+		mu.Lock()
+		defer mu.Unlock()
+
 		if !observer1Called {
 			t.Error("Expected observer1 to be called")
 		}
@@ -335,9 +349,12 @@ func TestStateObserversAndCallbacks(t *testing.T) {
 	})
 
 	t.Run("Should handle logging observer", func(t *testing.T) {
+		var mu sync.Mutex
 		var logMessage string
 		observer := &breaker.LoggingObserver{
 			LogFunc: func(msg string) {
+				mu.Lock()
+				defer mu.Unlock()
 				logMessage = msg
 			},
 		}
@@ -357,6 +374,9 @@ func TestStateObserversAndCallbacks(t *testing.T) {
 
 		// Wait for observer to be notified
 		time.Sleep(50 * time.Millisecond)
+
+		mu.Lock()
+		defer mu.Unlock()
 
 		if logMessage == "" {
 			t.Error("Expected log message to be set")
