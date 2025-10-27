@@ -1,44 +1,110 @@
+// Package breaker provides a thread-safe circuit breaker implementation.
+//
+// The Circuit Breaker pattern prevents cascading failures by temporarily blocking
+// requests to a failing service, allowing it time to recover.
+//
+// # States
+//
+// The circuit breaker has three states:
+//
+//   - Closed: Requests are allowed through. Failures increment a counter.
+//   - Open: Requests are blocked immediately. After a timeout, transitions to Half-Open.
+//   - Half-Open: A single request is allowed through to test if the service recovered.
+//
+// # Usage
+//
+// Basic usage:
+//
+//	cb := breaker.NewCircuitBreaker(3, 5*time.Second)
+//	result, err := cb.Execute(func() (interface{}, error) {
+//	    return someExternalCall()
+//	})
+//
+// With functional options:
+//
+//	cb := breaker.NewWithOptions(
+//	    breaker.WithFailureThreshold(5),
+//	    breaker.WithResetTimeout(10*time.Second),
+//	    breaker.WithStateChangeCallback(func(from, to breaker.CircuitBreakerState) {
+//	        log.Printf("State changed: %v -> %v", from, to)
+//	    }),
+//	)
+//
+// With context support:
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+//	defer cancel()
+//	result, err := cb.ExecuteWithContext(ctx, func(ctx context.Context) (interface{}, error) {
+//	    return someExternalCallWithContext(ctx)
+//	})
 package breaker
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
 )
 
+// CircuitBreakerState represents the current state of the circuit breaker.
 type CircuitBreakerState int
 
 const (
+	// Closed state: requests are allowed and failures are counted
 	Closed CircuitBreakerState = iota
+	// Open state: requests are blocked to allow recovery
 	Open
+	// HalfOpen state: testing if the service has recovered
 	HalfOpen
 )
 
 var (
+	// ErrCircuitBreakerOpen is returned when the circuit breaker is open
+	// and requests are being blocked.
 	ErrCircuitBreakerOpen = errors.New("circuit breaker is open")
 )
 
+// CircuitBreaker interface defines the contract for circuit breaker implementations.
+// All methods are thread-safe and can be called concurrently.
 type CircuitBreaker interface {
-	// Execute runs the given action if the CircuitBreaker is closed or half-open,
-	// else returns an error immediately.
+	// Execute runs the given action if the CircuitBreaker is closed or half-open.
+	// Returns ErrCircuitBreakerOpen if the circuit breaker is open.
+	//
+	// The action function should perform the protected operation and return
+	// its result and any error. If the action returns an error, it's counted
+	// as a failure.
 	Execute(action func() (interface{}, error)) (interface{}, error)
 
-	// State returns the current state of the CircuitBreaker.
+	// ExecuteWithContext runs the given action with context support.
+	// Returns ErrCircuitBreakerOpen if the circuit breaker is open,
+	// or context.Canceled/context.DeadlineExceeded if the context is cancelled.
+	//
+	// The context can be used for timeouts and cancellation within the action.
+	ExecuteWithContext(ctx context.Context, action func(ctx context.Context) (interface{}, error)) (interface{}, error)
+
+	// State returns the current state of the CircuitBreaker (Closed, Open, or HalfOpen).
+	// This method is thread-safe and can be called concurrently.
 	State() CircuitBreakerState
 
-	// Reset changes the state of the CircuitBreaker to closed without any
-	// concurrency safety. This should only be used in test code.
+	// Reset forcibly transitions the circuit breaker to the Closed state and resets
+	// all counters. This method is primarily intended for testing.
+	//
+	// In production, the circuit breaker should be allowed to manage its own state
+	// transitions based on failure thresholds and timeouts.
 	Reset()
 }
 
 type CircuitBreakerImpl struct {
 	state            CircuitBreakerState
+	currentState     State
 	failureCount     int
 	failureThreshold int
 	resetTimeout     time.Duration
 	mutex            sync.Mutex
 	lastFailure      time.Time
 	storage          StateRepository
+	observers        []StateObserver
+	onStateChange    func(from, to CircuitBreakerState)
 }
 
 // NewCircuitBreaker
@@ -62,57 +128,91 @@ func NewCircuitBreaker(failureThreshold int, resetTimeout time.Duration) Circuit
 //		NewInMemoryStateRepository(), // Or your own implementation of breaker.StateRepository
 //	)	// 3 failures in 5 seconds
 func NewCircuitBreakerWithStorage(failureThreshold int, resetTimeout time.Duration, storage StateRepository) CircuitBreaker {
-	return &CircuitBreakerImpl{
+	cb := &CircuitBreakerImpl{
 		state:            Closed,
+		currentState:     &ClosedState{},
 		failureThreshold: failureThreshold,
 		resetTimeout:     resetTimeout,
 		storage:          storage,
 	}
+	cb.currentState.OnEntry(cb)
+	return cb
 }
 
 func (c *CircuitBreakerImpl) Execute(action func() (interface{}, error)) (interface{}, error) {
-	currentState := c.State()
+	// Get current state with mutex protection
+	c.mutex.Lock()
+	state := c.currentState
+	c.mutex.Unlock()
 
-	if currentState == Open {
-		return nil, ErrCircuitBreakerOpen
+	// Delegate to the current state
+	return state.Execute(c, action)
+}
+
+// ExecuteWithContext runs the action with context support
+func (c *CircuitBreakerImpl) ExecuteWithContext(ctx context.Context, action func(ctx context.Context) (interface{}, error)) (interface{}, error) {
+	// Check if context is already cancelled
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
 	}
 
-	// If the CircuitBreaker is closed or half-open, execute the action.
-	result, err := action()
-	if err != nil {
-		// If the action returns an error, increment the failure count.
-		c.failureCount++
+	// Get current state with mutex protection
+	c.mutex.Lock()
+	state := c.currentState
+	c.mutex.Unlock()
 
-		// If the failure count has reached the threshold, set the state to open.
-		if c.failureCount >= c.failureThreshold {
-			c.setState(Open)
-			c.lastFailure = time.Now()
-		}
-	} else {
-		// If the action returns no error, reset the failure count and set the state to closed.
-		c.failureCount = 0
-		c.setState(Closed)
+	// Wrap the action to pass context
+	wrappedAction := func() (interface{}, error) {
+		return action(ctx)
 	}
 
-	return result, err
+	// Delegate to the current state
+	return state.Execute(c, wrappedAction)
 }
 
 func (c *CircuitBreakerImpl) State() CircuitBreakerState {
-	// If the state is not closed, load the current state from the storage.
-	if c.state != Closed {
-		c.state = c.storage.Load()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	// Check if we need to transition from Open to HalfOpen
+	if c.currentState.Name() == Open && time.Since(c.lastFailure) >= c.resetTimeout {
+		c.transitionTo(&HalfOpenState{})
 	}
 
-	if c.state == Open {
-		// If the CircuitBreaker is open, check if the reset timeout has passed.
-		if time.Since(c.lastFailure) >= c.resetTimeout {
-			// If the reset timeout has passed, set the state to half-open.
-			c.setState(HalfOpen)
-		}
+	return c.currentState.Name()
+}
+
+// transitionTo changes the state (must be called with mutex held)
+func (c *CircuitBreakerImpl) transitionTo(newState State) {
+	if c.currentState != nil {
+		c.currentState.OnExit(c)
 	}
 
-	// Load the current state from the storage.
-	return c.state
+	oldState := c.state
+	c.currentState = newState
+	c.state = newState.Name()
+	c.storage.Save(c.state)
+
+	c.currentState.OnEntry(c)
+
+	// Notify observers (in background to avoid blocking)
+	go c.notifyStateChange(oldState, c.state)
+}
+
+// notifyStateChange notifies all observers about a state change
+func (c *CircuitBreakerImpl) notifyStateChange(from, to CircuitBreakerState) {
+	// Call the callback if set
+	if c.onStateChange != nil {
+		c.onStateChange(from, to)
+	}
+
+	// Notify all observers
+	ctx := context.Background()
+	for _, observer := range c.observers {
+		observer.OnStateChange(ctx, from, to)
+	}
 }
 
 func (c *CircuitBreakerImpl) Reset() {
@@ -125,12 +225,7 @@ func (c *CircuitBreakerImpl) Reset() {
 	// Reset the last failure time
 	c.lastFailure = time.Time{}
 
-	// Reset the state to closed
-	c.setState(Closed)
+	// Transition to closed state
+	c.transitionTo(&ClosedState{})
 }
 
-// setState is a helper function to set the state of the CircuitBreaker
-func (c *CircuitBreakerImpl) setState(state CircuitBreakerState) {
-	c.state = state
-	c.storage.Save(c.state)
-}
