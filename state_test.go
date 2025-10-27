@@ -1,21 +1,24 @@
 package breaker
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/farzai/breaker-go/events"
 )
 
 // TestClosedStateLifecycle tests ClosedState OnEntry and OnExit
 func TestClosedStateLifecycle(t *testing.T) {
 	t.Run("OnEntry should reset failure count", func(t *testing.T) {
 		cb := &CircuitBreakerImpl{
-			state:            Closed,
-			currentState:     &ClosedState{},
-			failureThreshold: 3,
-			resetTimeout:     1 * time.Second,
-			storage:          NewInMemoryStateRepository(),
-			failureCount:     5, // Set a high failure count
+			currentState:       &ClosedState{},
+			failureThreshold:   3,
+			resetTimeout:       1 * time.Second,
+			persistenceManager: NewPersistenceManager(NewInMemorySnapshotRepository(), DefaultPersistenceConfig()),
+			eventBus:           events.NewEventBus(),
+			failureCount:       5, // Set a high failure count
 		}
 
 		state := &ClosedState{}
@@ -28,11 +31,11 @@ func TestClosedStateLifecycle(t *testing.T) {
 
 	t.Run("OnExit should be callable", func(t *testing.T) {
 		cb := &CircuitBreakerImpl{
-			state:            Closed,
-			currentState:     &ClosedState{},
-			failureThreshold: 3,
-			resetTimeout:     1 * time.Second,
-			storage:          NewInMemoryStateRepository(),
+			currentState:       &ClosedState{},
+			failureThreshold:   3,
+			resetTimeout:       1 * time.Second,
+			persistenceManager: NewPersistenceManager(NewInMemorySnapshotRepository(), DefaultPersistenceConfig()),
+			eventBus:           events.NewEventBus(),
 		}
 
 		state := &ClosedState{}
@@ -52,11 +55,11 @@ func TestClosedStateLifecycle(t *testing.T) {
 func TestOpenStateLifecycle(t *testing.T) {
 	t.Run("OnEntry should set lastFailure time", func(t *testing.T) {
 		cb := &CircuitBreakerImpl{
-			state:            Open,
 			currentState:     &OpenState{},
 			failureThreshold: 3,
 			resetTimeout:     1 * time.Second,
-			storage:          NewInMemoryStateRepository(),
+			persistenceManager: NewPersistenceManager(NewInMemorySnapshotRepository(), DefaultPersistenceConfig()),
+			eventBus:         events.NewEventBus(),
 			lastFailure:      time.Time{}, // Zero time
 		}
 
@@ -72,11 +75,11 @@ func TestOpenStateLifecycle(t *testing.T) {
 
 	t.Run("OnExit should be callable", func(t *testing.T) {
 		cb := &CircuitBreakerImpl{
-			state:            Open,
 			currentState:     &OpenState{},
 			failureThreshold: 3,
 			resetTimeout:     1 * time.Second,
-			storage:          NewInMemoryStateRepository(),
+			persistenceManager: NewPersistenceManager(NewInMemorySnapshotRepository(), DefaultPersistenceConfig()),
+			eventBus:         events.NewEventBus(),
 		}
 
 		state := &OpenState{}
@@ -93,16 +96,16 @@ func TestOpenStateLifecycle(t *testing.T) {
 
 	t.Run("Execute should transition to HalfOpen after timeout", func(t *testing.T) {
 		cb := &CircuitBreakerImpl{
-			state:            Open,
 			currentState:     &OpenState{},
 			failureThreshold: 3,
 			resetTimeout:     100 * time.Millisecond,
-			storage:          NewInMemoryStateRepository(),
+			persistenceManager: NewPersistenceManager(NewInMemorySnapshotRepository(), DefaultPersistenceConfig()),
+			eventBus:         events.NewEventBus(),
 			lastFailure:      time.Now().Add(-200 * time.Millisecond), // Past timeout
 		}
 
 		state := &OpenState{}
-		result, err := state.Execute(cb, func() (interface{}, error) {
+		result, err := state.Execute(context.Background(), cb, func() (interface{}, error) {
 			return "success", nil
 		})
 
@@ -116,8 +119,8 @@ func TestOpenStateLifecycle(t *testing.T) {
 
 		// Note: The state will transition to HalfOpen, then execute the action successfully,
 		// which causes it to transition to Closed. This is the expected behavior.
-		if cb.state != Closed {
-			t.Errorf("Expected state to be Closed after successful execution, got %v", cb.state)
+		if cb.State() != Closed {
+			t.Errorf("Expected state to be Closed after successful execution, got %v", cb.State())
 		}
 	})
 }
@@ -126,11 +129,11 @@ func TestOpenStateLifecycle(t *testing.T) {
 func TestHalfOpenStateLifecycle(t *testing.T) {
 	t.Run("OnEntry should be callable", func(t *testing.T) {
 		cb := &CircuitBreakerImpl{
-			state:            HalfOpen,
 			currentState:     &HalfOpenState{},
 			failureThreshold: 3,
 			resetTimeout:     1 * time.Second,
-			storage:          NewInMemoryStateRepository(),
+			persistenceManager: NewPersistenceManager(NewInMemorySnapshotRepository(), DefaultPersistenceConfig()),
+			eventBus:         events.NewEventBus(),
 		}
 
 		state := &HalfOpenState{}
@@ -140,11 +143,11 @@ func TestHalfOpenStateLifecycle(t *testing.T) {
 
 	t.Run("OnExit should be callable", func(t *testing.T) {
 		cb := &CircuitBreakerImpl{
-			state:            HalfOpen,
 			currentState:     &HalfOpenState{},
 			failureThreshold: 3,
 			resetTimeout:     1 * time.Second,
-			storage:          NewInMemoryStateRepository(),
+			persistenceManager: NewPersistenceManager(NewInMemorySnapshotRepository(), DefaultPersistenceConfig()),
+			eventBus:         events.NewEventBus(),
 		}
 
 		state := &HalfOpenState{}
@@ -161,15 +164,15 @@ func TestHalfOpenStateLifecycle(t *testing.T) {
 
 	t.Run("Execute should transition to Closed on success", func(t *testing.T) {
 		cb := &CircuitBreakerImpl{
-			state:            HalfOpen,
 			currentState:     &HalfOpenState{},
 			failureThreshold: 3,
 			resetTimeout:     1 * time.Second,
-			storage:          NewInMemoryStateRepository(),
+			persistenceManager: NewPersistenceManager(NewInMemorySnapshotRepository(), DefaultPersistenceConfig()),
+			eventBus:         events.NewEventBus(),
 		}
 
 		state := &HalfOpenState{}
-		result, err := state.Execute(cb, func() (interface{}, error) {
+		result, err := state.Execute(context.Background(), cb, func() (interface{}, error) {
 			return "success", nil
 		})
 
@@ -182,22 +185,22 @@ func TestHalfOpenStateLifecycle(t *testing.T) {
 		}
 
 		// Verify transition to Closed happened
-		if cb.state != Closed {
-			t.Errorf("Expected state to be Closed, got %v", cb.state)
+		if cb.State() != Closed {
+			t.Errorf("Expected state to be Closed, got %v", cb.State())
 		}
 	})
 
 	t.Run("Execute should transition to Open on failure", func(t *testing.T) {
 		cb := &CircuitBreakerImpl{
-			state:            HalfOpen,
 			currentState:     &HalfOpenState{},
 			failureThreshold: 3,
 			resetTimeout:     1 * time.Second,
-			storage:          NewInMemoryStateRepository(),
+			persistenceManager: NewPersistenceManager(NewInMemorySnapshotRepository(), DefaultPersistenceConfig()),
+			eventBus:         events.NewEventBus(),
 		}
 
 		state := &HalfOpenState{}
-		result, err := state.Execute(cb, func() (interface{}, error) {
+		result, err := state.Execute(context.Background(), cb, func() (interface{}, error) {
 			return nil, errors.New("error")
 		})
 
@@ -210,8 +213,8 @@ func TestHalfOpenStateLifecycle(t *testing.T) {
 		}
 
 		// Verify transition to Open happened
-		if cb.state != Open {
-			t.Errorf("Expected state to be Open, got %v", cb.state)
+		if cb.State() != Open {
+			t.Errorf("Expected state to be Open, got %v", cb.State())
 		}
 	})
 }
@@ -219,21 +222,25 @@ func TestHalfOpenStateLifecycle(t *testing.T) {
 // TestStateTransitions tests the transitionTo method
 func TestStateTransitions(t *testing.T) {
 	t.Run("Should call OnExit on old state and OnEntry on new state", func(t *testing.T) {
+		repo := NewInMemorySnapshotRepository()
+		config := DefaultPersistenceConfig()
+		config.Async = false // Use sync for testing
+
 		cb := &CircuitBreakerImpl{
-			state:            Closed,
-			currentState:     &ClosedState{},
-			failureThreshold: 3,
-			resetTimeout:     1 * time.Second,
-			storage:          NewInMemoryStateRepository(),
-			failureCount:     5,
+			currentState:       &ClosedState{},
+			failureThreshold:   3,
+			resetTimeout:       1 * time.Second,
+			persistenceManager: NewPersistenceManager(repo, config),
+			eventBus:           events.NewEventBus(),
+			failureCount:       5,
 		}
 
 		// Transition to Open state
-		cb.transitionTo(&OpenState{})
+		cb.transitionTo(nil, &OpenState{})
 
 		// Verify state changed
-		if cb.state != Open {
-			t.Errorf("Expected state to be Open, got %v", cb.state)
+		if cb.State() != Open {
+			t.Errorf("Expected state to be Open, got %v", cb.State())
 		}
 
 		// Verify lastFailure was set by OnEntry
@@ -241,9 +248,14 @@ func TestStateTransitions(t *testing.T) {
 			t.Error("Expected lastFailure to be set")
 		}
 
-		// Verify state was saved to storage
-		if cb.storage.Load() != Open {
-			t.Errorf("Expected storage to contain Open state, got %v", cb.storage.Load())
+		// Verify state was saved to repository
+		ctx := context.Background()
+		snapshot, err := repo.Load(ctx)
+		if err != nil {
+			t.Fatalf("Failed to load snapshot: %v", err)
+		}
+		if snapshot.State != Open {
+			t.Errorf("Expected snapshot state to be Open, got %v", snapshot.State)
 		}
 	})
 }

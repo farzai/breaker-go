@@ -4,14 +4,19 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	breaker "github.com/farzai/breaker-go"
+	"github.com/farzai/breaker-go/events"
 )
 
 func TestCircuitBreakerInitialState(t *testing.T) {
-	cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+	cb, err := breaker.NewCircuitBreaker(3, 1*time.Second)
+	if err != nil {
+		t.Fatalf("Failed to create circuit breaker: %v", err)
+	}
 
 	if cb.State() != breaker.Closed {
 		t.Errorf("Expected initial state to be Closed, got %v", cb.State())
@@ -21,7 +26,10 @@ func TestCircuitBreakerInitialState(t *testing.T) {
 func TestCircuitBreakerState(t *testing.T) {
 	t.Run("Should be open when failure threshold reached", func(t *testing.T) {
 		// 3 failures in 1 second
-		cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+		cb, err := breaker.NewCircuitBreaker(3, 1*time.Second)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		// 3 failures
 		for i := 0; i < 3; i++ {
@@ -37,7 +45,10 @@ func TestCircuitBreakerState(t *testing.T) {
 
 	t.Run("Should be got error of open state", func(t *testing.T) {
 		// 3 failures in 1 second
-		cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+		cb, err := breaker.NewCircuitBreaker(3, 1*time.Second)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		// 3 failures
 		for i := 0; i < 3; i++ {
@@ -55,7 +66,10 @@ func TestCircuitBreakerState(t *testing.T) {
 
 	t.Run("Should be half-open when reset timeout reached", func(t *testing.T) {
 		// 3 failures in 1 second
-		cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+		cb, err := breaker.NewCircuitBreaker(3, 1*time.Second)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		// 3 failures
 		for i := 0; i < 3; i++ {
@@ -78,7 +92,10 @@ func TestCircuitBreakerState(t *testing.T) {
 
 	t.Run("Should be closed when success threshold reached", func(t *testing.T) {
 		// 3 failures in 1 second
-		cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+		cb, err := breaker.NewCircuitBreaker(3, 1*time.Second)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		// 3 failures
 		for i := 0; i < 3; i++ {
@@ -110,7 +127,10 @@ func TestCircuitBreakerState(t *testing.T) {
 
 	t.Run("Should be open when failure threshold reached after reset", func(t *testing.T) {
 		// 3 failures in 1 second
-		cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+		cb, err := breaker.NewCircuitBreaker(3, 1*time.Second)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		// 3 failures
 		for i := 0; i < 3; i++ {
@@ -142,7 +162,10 @@ func TestCircuitBreakerState(t *testing.T) {
 
 	t.Run("Should be closed state if Reset is called", func(t *testing.T) {
 		// 3 failures in 1 second
-		cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+		cb, err := breaker.NewCircuitBreaker(3, 1*time.Second)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		// 3 failures
 		for i := 0; i < 3; i++ {
@@ -179,16 +202,20 @@ func TestCircuitBreakerState(t *testing.T) {
 	})
 }
 
-// TestWithStorageOption tests the WithStorage option
-func TestWithStorageOption(t *testing.T) {
-	t.Run("Should use custom storage", func(t *testing.T) {
-		storage := breaker.NewInMemoryStateRepository()
+// TestWithSnapshotRepository tests the WithSnapshotRepository option
+func TestWithSnapshotRepository(t *testing.T) {
+	t.Run("Should use custom snapshot repository", func(t *testing.T) {
+		repo := breaker.NewInMemorySnapshotRepository()
 
-		cb := breaker.NewWithOptions(
+		cb, err := breaker.New(
 			breaker.WithFailureThreshold(3),
 			breaker.WithResetTimeout(1*time.Second),
-			breaker.WithStorage(storage),
+			breaker.WithSnapshotRepository(repo),
+			breaker.WithAsyncPersistence(false), // Use synchronous persistence for testing
 		)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		// Trigger open state
 		for i := 0; i < 3; i++ {
@@ -197,9 +224,14 @@ func TestWithStorageOption(t *testing.T) {
 			})
 		}
 
-		// Verify state is saved to storage
-		if storage.Load() != breaker.Open {
-			t.Errorf("Expected storage to contain Open state, got %v", storage.Load())
+		// Verify state is saved to repository
+		ctx := context.Background()
+		snapshot, err := repo.Load(ctx)
+		if err != nil {
+			t.Fatalf("Failed to load snapshot: %v", err)
+		}
+		if snapshot.State != breaker.Open {
+			t.Errorf("Expected snapshot state to be Open, got %v", snapshot.State)
 		}
 	})
 }
@@ -207,11 +239,15 @@ func TestWithStorageOption(t *testing.T) {
 // TestExecuteWithContext tests ExecuteWithContext method
 func TestExecuteWithContext(t *testing.T) {
 	t.Run("Should return error when context is cancelled before execution", func(t *testing.T) {
-		cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+		cb, err := breaker.NewCircuitBreaker(3, 1*time.Second)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
+
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately
 
-		_, err := cb.ExecuteWithContext(ctx, func(ctx context.Context) (interface{}, error) {
+		_, err = cb.ExecuteWithContext(ctx, func(ctx context.Context) (interface{}, error) {
 			return "success", nil
 		})
 
@@ -221,11 +257,15 @@ func TestExecuteWithContext(t *testing.T) {
 	})
 
 	t.Run("Should handle context timeout during execution", func(t *testing.T) {
-		cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+		cb, err := breaker.NewCircuitBreaker(3, 1*time.Second)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 		defer cancel()
 
-		_, err := cb.ExecuteWithContext(ctx, func(ctx context.Context) (interface{}, error) {
+		_, err = cb.ExecuteWithContext(ctx, func(ctx context.Context) (interface{}, error) {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -240,7 +280,11 @@ func TestExecuteWithContext(t *testing.T) {
 	})
 
 	t.Run("Should execute successfully with valid context", func(t *testing.T) {
-		cb := breaker.NewCircuitBreaker(3, 1*time.Second)
+		cb, err := breaker.NewCircuitBreaker(3, 1*time.Second)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
+
 		ctx := context.Background()
 
 		result, err := cb.ExecuteWithContext(ctx, func(ctx context.Context) (interface{}, error) {
@@ -257,24 +301,30 @@ func TestExecuteWithContext(t *testing.T) {
 	})
 }
 
-// TestStateObserversAndCallbacks tests state change observers and callbacks
-func TestStateObserversAndCallbacks(t *testing.T) {
-	t.Run("Should notify state change callback", func(t *testing.T) {
+// TestEventListeners tests event listener functionality
+func TestEventListeners(t *testing.T) {
+	t.Run("Should notify event listener on state change", func(t *testing.T) {
 		var mu sync.Mutex
-		var callbackCalled bool
-		var fromState, toState breaker.CircuitBreakerState
+		var listenerCalled bool
+		var fromState, toState events.CircuitBreakerState
 
-		cb := breaker.NewWithOptions(
+		listener := events.EventListenerFunc(func(event events.StateChangeEvent) error {
+			mu.Lock()
+			defer mu.Unlock()
+			listenerCalled = true
+			fromState = event.From
+			toState = event.To
+			return nil
+		})
+
+		cb, err := breaker.New(
 			breaker.WithFailureThreshold(3),
 			breaker.WithResetTimeout(1*time.Second),
-			breaker.WithStateChangeCallback(func(from, to breaker.CircuitBreakerState) {
-				mu.Lock()
-				defer mu.Unlock()
-				callbackCalled = true
-				fromState = from
-				toState = to
-			}),
+			breaker.WithEventListener(listener),
 		)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		// Trigger state change
 		for i := 0; i < 3; i++ {
@@ -283,48 +333,49 @@ func TestStateObserversAndCallbacks(t *testing.T) {
 			})
 		}
 
-		// Wait for callback to be called (it runs in a goroutine)
+		// Wait for listener to be called (it runs in a goroutine)
 		time.Sleep(50 * time.Millisecond)
 
 		mu.Lock()
 		defer mu.Unlock()
 
-		if !callbackCalled {
-			t.Error("Expected callback to be called")
+		if !listenerCalled {
+			t.Error("Expected listener to be called")
 		}
 
-		if fromState != breaker.Closed || toState != breaker.Open {
+		if fromState != events.Closed || toState != events.Open {
 			t.Errorf("Expected state change from Closed to Open, got %v to %v", fromState, toState)
 		}
 	})
 
-	t.Run("Should notify multiple observers", func(t *testing.T) {
+	t.Run("Should notify multiple listeners", func(t *testing.T) {
 		var mu sync.Mutex
-		observer1Called := false
-		observer2Called := false
+		listener1Called := false
+		listener2Called := false
 
-		observer1 := &testObserver{
-			onStateChange: func(ctx context.Context, from, to breaker.CircuitBreakerState) {
-				mu.Lock()
-				defer mu.Unlock()
-				observer1Called = true
-			},
-		}
+		listener1 := events.EventListenerFunc(func(event events.StateChangeEvent) error {
+			mu.Lock()
+			defer mu.Unlock()
+			listener1Called = true
+			return nil
+		})
 
-		observer2 := &testObserver{
-			onStateChange: func(ctx context.Context, from, to breaker.CircuitBreakerState) {
-				mu.Lock()
-				defer mu.Unlock()
-				observer2Called = true
-			},
-		}
+		listener2 := events.EventListenerFunc(func(event events.StateChangeEvent) error {
+			mu.Lock()
+			defer mu.Unlock()
+			listener2Called = true
+			return nil
+		})
 
-		cb := breaker.NewWithOptions(
+		cb, err := breaker.New(
 			breaker.WithFailureThreshold(3),
 			breaker.WithResetTimeout(1*time.Second),
-			breaker.WithObserver(observer1),
-			breaker.WithObserver(observer2),
+			breaker.WithEventListener(listener1),
+			breaker.WithEventListener(listener2),
 		)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		// Trigger state change
 		for i := 0; i < 3; i++ {
@@ -333,37 +384,40 @@ func TestStateObserversAndCallbacks(t *testing.T) {
 			})
 		}
 
-		// Wait for observers to be notified (they run in a goroutine)
+		// Wait for listeners to be notified (they run in a goroutine)
 		time.Sleep(50 * time.Millisecond)
 
 		mu.Lock()
 		defer mu.Unlock()
 
-		if !observer1Called {
-			t.Error("Expected observer1 to be called")
+		if !listener1Called {
+			t.Error("Expected listener1 to be called")
 		}
 
-		if !observer2Called {
-			t.Error("Expected observer2 to be called")
+		if !listener2Called {
+			t.Error("Expected listener2 to be called")
 		}
 	})
 
-	t.Run("Should handle logging observer", func(t *testing.T) {
+	t.Run("Should handle logging listener", func(t *testing.T) {
 		var mu sync.Mutex
 		var logMessage string
-		observer := &breaker.LoggingObserver{
-			LogFunc: func(msg string) {
-				mu.Lock()
-				defer mu.Unlock()
-				logMessage = msg
-			},
-		}
 
-		cb := breaker.NewWithOptions(
+		listener := events.EventListenerFunc(func(event events.StateChangeEvent) error {
+			mu.Lock()
+			defer mu.Unlock()
+			logMessage = "Circuit breaker state changed from " + event.From.String() + " to " + event.To.String()
+			return nil
+		})
+
+		cb, err := breaker.New(
 			breaker.WithFailureThreshold(3),
 			breaker.WithResetTimeout(1*time.Second),
-			breaker.WithObserver(observer),
+			breaker.WithEventListener(listener),
 		)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		// Trigger state change
 		for i := 0; i < 3; i++ {
@@ -372,7 +426,7 @@ func TestStateObserversAndCallbacks(t *testing.T) {
 			})
 		}
 
-		// Wait for observer to be notified
+		// Wait for listener to be notified
 		time.Sleep(50 * time.Millisecond)
 
 		mu.Lock()
@@ -389,21 +443,145 @@ func TestStateObserversAndCallbacks(t *testing.T) {
 	})
 }
 
-// testObserver is a helper for testing observers
-type testObserver struct {
-	onStateChange func(ctx context.Context, from, to breaker.CircuitBreakerState)
+// TestWithEventBus tests the WithEventBus option
+func TestWithEventBus(t *testing.T) {
+	t.Run("Uses custom event bus", func(t *testing.T) {
+		customBus := events.NewEventBus(events.WithSynchronousDelivery())
+
+		cb, err := breaker.New(
+			breaker.WithFailureThreshold(3),
+			breaker.WithResetTimeout(1*time.Second),
+			breaker.WithEventBus(customBus),
+		)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
+
+		var listenerCalled atomic.Bool
+		customBus.Subscribe(events.EventListenerFunc(func(event events.StateChangeEvent) error {
+			listenerCalled.Store(true)
+			return nil
+		}))
+
+		// Trigger state change
+		for i := 0; i < 3; i++ {
+			cb.Execute(func() (interface{}, error) {
+				return nil, errors.New("error")
+			})
+		}
+
+		// Wait for synchronous delivery
+		time.Sleep(50 * time.Millisecond)
+
+		if !listenerCalled.Load() {
+			t.Error("Expected custom event bus listener to be called")
+		}
+	})
+
+	t.Run("Returns error for nil event bus", func(t *testing.T) {
+		_, err := breaker.New(
+			breaker.WithEventBus(nil),
+		)
+		if err == nil {
+			t.Error("Expected error for nil event bus")
+		}
+	})
 }
 
-func (o *testObserver) OnStateChange(ctx context.Context, from, to breaker.CircuitBreakerState) {
-	if o.onStateChange != nil {
-		o.onStateChange(ctx, from, to)
-	}
+// TestWithEventMiddleware tests the WithEventMiddleware option
+func TestWithEventMiddleware(t *testing.T) {
+	t.Run("Returns error for nil middleware", func(t *testing.T) {
+		_, err := breaker.New(
+			breaker.WithEventMiddleware(nil),
+		)
+		if err == nil {
+			t.Error("Expected error for nil middleware")
+		}
+	})
+
+	t.Run("Creates bus with middleware via option", func(t *testing.T) {
+		middleware := func(next events.EventHandler) events.EventHandler {
+			return func(event events.StateChangeEvent) error {
+				return next(event)
+			}
+		}
+
+		cb, err := breaker.New(
+			breaker.WithFailureThreshold(3),
+			breaker.WithResetTimeout(1*time.Second),
+			breaker.WithEventMiddleware(middleware),
+		)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
+
+		// Just verify it was created successfully
+		if cb == nil {
+			t.Error("Expected circuit breaker to be created")
+		}
+	})
+}
+
+// TestInvalidOptions tests error handling for invalid options
+func TestInvalidOptions(t *testing.T) {
+	t.Run("Returns error for invalid failure threshold", func(t *testing.T) {
+		_, err := breaker.New(
+			breaker.WithFailureThreshold(0),
+		)
+		if err == nil {
+			t.Error("Expected error for zero failure threshold")
+		}
+
+		_, err = breaker.New(
+			breaker.WithFailureThreshold(-1),
+		)
+		if err == nil {
+			t.Error("Expected error for negative failure threshold")
+		}
+	})
+
+	t.Run("Returns error for invalid reset timeout", func(t *testing.T) {
+		_, err := breaker.New(
+			breaker.WithResetTimeout(0),
+		)
+		if err == nil {
+			t.Error("Expected error for zero reset timeout")
+		}
+
+		_, err = breaker.New(
+			breaker.WithResetTimeout(-1*time.Second),
+		)
+		if err == nil {
+			t.Error("Expected error for negative reset timeout")
+		}
+	})
+
+	t.Run("Returns error for nil snapshot repository", func(t *testing.T) {
+		_, err := breaker.New(
+			breaker.WithSnapshotRepository(nil),
+		)
+		if err == nil {
+			t.Error("Expected error for nil snapshot repository")
+		}
+	})
+
+	t.Run("Returns error for nil event listener", func(t *testing.T) {
+		_, err := breaker.New(
+			breaker.WithEventListener(nil),
+		)
+		if err == nil {
+			t.Error("Expected error for nil event listener")
+		}
+	})
 }
 
 // TestCircuitBreakerConcurrency tests concurrent access to the circuit breaker
 func TestCircuitBreakerConcurrency(t *testing.T) {
 	t.Run("Concurrent Execute calls should be thread-safe", func(t *testing.T) {
-		cb := breaker.NewCircuitBreaker(100, 1*time.Second)
+		cb, err := breaker.NewCircuitBreaker(100, 1*time.Second)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		const numGoroutines = 50
 		const numExecutions = 50
@@ -442,7 +620,10 @@ func TestCircuitBreakerConcurrency(t *testing.T) {
 	})
 
 	t.Run("Concurrent State and Execute calls should be thread-safe", func(t *testing.T) {
-		cb := breaker.NewCircuitBreaker(5, 500*time.Millisecond)
+		cb, err := breaker.NewCircuitBreaker(5, 500*time.Millisecond)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		const numGoroutines = 50
 		done := make(chan bool, numGoroutines)
@@ -481,7 +662,10 @@ func TestCircuitBreakerConcurrency(t *testing.T) {
 	})
 
 	t.Run("Concurrent Reset calls should be thread-safe", func(t *testing.T) {
-		cb := breaker.NewCircuitBreaker(3, 100*time.Millisecond)
+		cb, err := breaker.NewCircuitBreaker(3, 100*time.Millisecond)
+		if err != nil {
+			t.Fatalf("Failed to create circuit breaker: %v", err)
+		}
 
 		// Trigger open state
 		for i := 0; i < 3; i++ {
@@ -511,4 +695,25 @@ func TestCircuitBreakerConcurrency(t *testing.T) {
 			t.Errorf("Expected state to be Closed after concurrent resets, got %v", cb.State())
 		}
 	})
+}
+
+// TestCircuitBreakerStateString tests the String() method of CircuitBreakerState
+func TestCircuitBreakerStateString(t *testing.T) {
+	tests := []struct {
+		state    breaker.CircuitBreakerState
+		expected string
+	}{
+		{breaker.Closed, "Closed"},
+		{breaker.Open, "Open"},
+		{breaker.HalfOpen, "HalfOpen"},
+		{breaker.CircuitBreakerState(999), "Unknown"}, // Invalid state
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expected, func(t *testing.T) {
+			if got := tt.state.String(); got != tt.expected {
+				t.Errorf("State.String() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
 }
